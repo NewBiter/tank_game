@@ -40,7 +40,7 @@ const bossSong = {
   idx: 0,
   cdUntil: 0,
   inited: false,
-  nextPlayAt: 0, // AudioContext 时间轴：保证上一段放完再播下一段
+  playing: false, // 当前是否正在播放片段（播放期间不触发新片段）
 };
 
 function initBossSongSegments(durationSec) {
@@ -55,12 +55,18 @@ function initBossSongSegments(durationSec) {
 }
 
 function bossSingOnHurt() {
-  // 冷却：至少间隔 0.9s
+  // 需求：音乐播放期间被击中不计触发；只有无音乐时被击中才触发
+  if (bossSong.playing) return;
+
+  // 非播放状态下的轻微冷却（防止手速太快造成过密触发）
   const now = performance.now() / 1000;
   if (now < bossSong.cdUntil) return;
-  bossSong.cdUntil = now + 0.9;
+  bossSong.cdUntil = now + 0.25;
 
-  // 预加载（异步），并播放一段；若加载失败就 fallback baby
+  playNextBossSegment();
+}
+
+function playNextBossSegment() {
   try {
     audio.preloadSong(bossSong.url).then((buf) => {
       if (!bossSong.inited) {
@@ -70,11 +76,10 @@ function bossSingOnHurt() {
       if (!bossSong.segments.length) return;
       const seg = bossSong.segments[bossSong.idx % bossSong.segments.length];
       bossSong.idx += 1;
-      // 串行播放：上一段没播完就排队到后面
-      const tNow = audio.getTime();
-      const when = Math.max(tNow, bossSong.nextPlayAt);
-      audio.playSongSegmentAt(bossSong.url, seg.start, seg.dur, 0.85, when);
-      bossSong.nextPlayAt = when + seg.dur + 0.02; // 轻微间隙
+      bossSong.playing = true;
+      audio.playSongSegmentAt(bossSong.url, seg.start, seg.dur, 0.85, null, () => {
+        bossSong.playing = false;
+      });
     }).catch(() => {
       bossSayBaby();
     });
@@ -366,7 +371,7 @@ function createAudio() {
     return ac.currentTime;
   }
 
-  function playSongSegmentAt(url, startSec, durSec, gain = 0.8, whenSec = null) {
+  function playSongSegmentAt(url, startSec, durSec, gain = 0.8, whenSec = null, onEnded = null) {
     if (!ensure() || !ac || !sfxBus) return;
     if (muted || ac.state === "suspended") return;
     const cached = songCache.get(url);
@@ -388,6 +393,7 @@ function createAudio() {
       g.gain.setValueAtTime(gain, fadeOutStart);
       g.gain.linearRampToValueAtTime(0.0001, endT);
       src.start(t0, safeStart, safeDur);
+      if (typeof onEnded === "function") src.onended = () => { try { onEnded(); } catch {} };
     };
     if (cached && !(cached instanceof Promise)) {
       playWith(cached);
