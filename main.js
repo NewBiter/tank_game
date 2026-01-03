@@ -8,6 +8,29 @@ const ctx = /** @type {CanvasRenderingContext2D|null} */ (canvas?.getContext("2d
 // 仅用于视觉动画，不影响物理与玩法
 let gfxTime = 0;
 
+// Boss受伤喊话冷却（避免连发太吵）
+let bossBabyCd = 0;
+
+function bossSayBaby() {
+  try {
+    if (!("speechSynthesis" in window)) return;
+    // 冷却：至少间隔 0.35s
+    const now = performance.now() / 1000;
+    if (now < bossBabyCd) return;
+    bossBabyCd = now + 0.35;
+
+    const u = new SpeechSynthesisUtterance("baby");
+    u.lang = "en-US";
+    u.rate = 1.05;
+    u.pitch = 1.15;
+    u.volume = 0.9;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(u);
+  } catch {
+    // ignore
+  }
+}
+
 // ===== 资源：Boss图片 =====
 const bossImg = new Image();
 bossImg.src = "./Untitled.jpeg";
@@ -333,6 +356,13 @@ function showFatalError(err) {
 const ui = {
   overlay: $("#overlay"),
   app: $("#app"),
+  levelPass: $("#level-pass"),
+  adminPanel: $("#admin-panel"),
+  btnRoleUser: $("#btn-role-user"),
+  btnRoleAdmin: $("#btn-role-admin"),
+  btnAdminLogin: $("#btn-admin-login"),
+  levelSelect: $("#level-select"),
+  invincible: $("#invincible"),
   btnStart: $("#btn-start"),
   btnMode1: $("#btn-mode-1"),
   btnMode2: $("#btn-mode-2"),
@@ -596,6 +626,21 @@ const keyMapP2 = new Map([
 ]);
 
 function onKey(e, isDown) {
+  // 当焦点在输入框/文本域/可编辑区域时，不要拦截按键（否则无法输入选关密码，如 vae）
+  const ae = document.activeElement;
+  const tag = ae && ae.tagName ? ae.tagName.toUpperCase() : "";
+  const isTyping = !!ae && (tag === "INPUT" || tag === "TEXTAREA" || ae.isContentEditable);
+  if (isTyping) {
+    // 允许在密码框按 Enter 直接开始
+    if (e.code === "Enter" && isDown && ae === ui.levelPass) {
+      e.preventDefault();
+      audio.unlock();
+      audio.startMusic();
+      startGame();
+    }
+    return;
+  }
+
   if (e.code === "KeyP" && isDown) {
     e.preventDefault();
     pausePressed = true;
@@ -870,6 +915,9 @@ const state = {
   levelCfg: LEVELS[0],
   pendingNextLevel: false,
   mode: 2, // 1=单人(P1) 2=双人(P1+P2)
+  admin: false,
+  adminAuthed: false,
+  invincible: false, // 玩家无敌（不掉命）
   scores: [0, 0], // [p1, p2]
   lives: [3, 3],  // [p1, p2]
   waveLeft: 10, // 总敌人数量
@@ -895,10 +943,40 @@ splitTiles();
 
 let startAction = "newrun"; // "newrun" | "nextlevel"
 
-function startNewRun() {
+function parseLevelFromPassword(raw) {
+  const s = String(raw || "").trim().toLowerCase();
+  if (!s) return null;
+  // 允许：1/2/3、level1/level2/level3、lvl1/lvl2/lvl3、boss(=3)
+  if (s === "1" || s === "level1" || s === "lvl1") return 0;
+  if (s === "2" || s === "level2" || s === "lvl2") return 1;
+  if (s === "3" || s === "level3" || s === "lvl3" || s === "boss" || s === "vae") return 2;
+  return null;
+}
+
+function isAdminAuthed() {
+  return String(ui.levelPass?.value || "").trim().toLowerCase() === "vae";
+}
+
+function setRole(isAdmin) {
+  state.admin = !!isAdmin;
+  if (!state.admin) state.adminAuthed = false;
+  if (ui.adminPanel) ui.adminPanel.classList.toggle("hidden", !state.admin);
+  if (ui.btnRoleUser && ui.btnRoleAdmin) {
+    ui.btnRoleUser.classList.toggle("btn-primary", !state.admin);
+    ui.btnRoleUser.classList.toggle("btn-ghost", state.admin);
+    ui.btnRoleAdmin.classList.toggle("btn-primary", state.admin);
+    ui.btnRoleAdmin.classList.toggle("btn-ghost", !state.admin);
+  }
+  // 未认证前禁用选关/无敌；认证后启用
+  const authed = state.admin && (state.adminAuthed || isAdminAuthed());
+  if (ui.levelSelect) ui.levelSelect.disabled = !authed;
+  if (ui.invincible) ui.invincible.disabled = !authed;
+}
+
+function startNewRun(startLevelIndex = 0) {
   state.scores = [0, 0];
   state.lives = [3, 3];
-  loadLevel(0, { keepProgress: true });
+  loadLevel(startLevelIndex, { keepProgress: true });
 }
 
 function loadLevel(levelIndex, { keepProgress }) {
@@ -1369,6 +1447,11 @@ function update(dt) {
         if (!p || !p.alive) continue;
         if (rectsOverlap(br, p.rect()) && p.invuln <= 0) {
           b.alive = false;
+          if (state.invincible) {
+            const cc = p.center();
+            spawnImpact(cc.x, cc.y, "enemy", 0.9);
+            break;
+          }
           // 护盾：吸收一次伤害
           if (p.buffs && p.buffs.shieldUntil > state.time) {
             p.buffs.shieldUntil = 0;
@@ -1389,6 +1472,7 @@ function update(dt) {
           b.alive = false;
           state.boss.hp -= 1;
           state.boss.invuln = 0.08;
+          bossSayBaby();
           const cc = { x: state.boss.x + state.boss.w / 2, y: state.boss.y + state.boss.h / 2 };
           spawnImpact(cc.x, cc.y, b.owner, 1.2);
           if (state.boss.hp <= 0) killBoss(b.owner);
@@ -2243,6 +2327,15 @@ function showMenu() {
   if (ui.btnStart) ui.btnStart.textContent = "开始游戏";
   if (ui.btnStart) ui.btnStart.disabled = false;
   startAction = "newrun";
+  if (ui.levelPass) ui.levelPass.value = "";
+  if (ui.levelSelect) ui.levelSelect.value = "1";
+  if (ui.invincible) {
+    ui.invincible.checked = false;
+    ui.invincible.disabled = true;
+  }
+  state.invincible = false;
+  state.adminAuthed = false;
+  setRole(false);
 
   // HUD显示切换
   if (ui.app) ui.app.classList.toggle("single", state.mode === 1);
@@ -2257,7 +2350,16 @@ function showMenu() {
 
 function startGame() {
   if (startAction === "newrun") {
-    startNewRun();
+    // 普通：只能从第1关开局
+    // 管理员：输入 vae 后可选任意关
+    let startLevel = 0;
+    const authed = state.admin && (state.adminAuthed || isAdminAuthed());
+    if (authed) {
+      const lv = Number(ui.levelSelect?.value || "1");
+      startLevel = clamp(lv - 1, 0, LEVELS.length - 1);
+    }
+    state.invincible = !!ui.invincible?.checked && authed;
+    startNewRun(startLevel);
     if (ui.overlay) ui.overlay.classList.add("hidden");
     state.paused = false;
   } else {
@@ -2290,6 +2392,26 @@ ui.btnRestart?.addEventListener("click", () => {
 ui.btnSound?.addEventListener("click", () => {
   audio.unlock();
   audio.toggleMute();
+});
+
+ui.btnRoleUser?.addEventListener("click", () => {
+  setRole(false);
+});
+ui.btnRoleAdmin?.addEventListener("click", () => {
+  setRole(true);
+});
+ui.btnAdminLogin?.addEventListener("click", () => {
+  setRole(true);
+  // 登录：密码正确则保持认证状态
+  state.adminAuthed = isAdminAuthed();
+  setRole(true);
+});
+
+// 输入密码时即时解锁（可选，但更顺手）
+ui.levelPass?.addEventListener("input", () => {
+  if (!state.admin) return;
+  state.adminAuthed = isAdminAuthed();
+  setRole(true);
 });
 
 ui.btnMode1?.addEventListener("click", () => {

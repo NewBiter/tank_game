@@ -35,6 +35,27 @@
             <button id="btn-mode-1" class="btn btn-ghost" type="button">单人</button>
             <button id="btn-mode-2" class="btn btn-primary" type="button">双人</button>
           </div>
+          <div class="row" style="margin: 0 0 12px 0;">
+            <button id="btn-role-user" class="btn btn-primary" type="button">普通</button>
+            <button id="btn-role-admin" class="btn btn-ghost" type="button">管理员登录</button>
+          </div>
+          <div id="admin-panel" class="admin-panel">
+            <div class="row" style="margin: 0 0 10px 0;">
+              <input id="level-pass" class="input" type="password" inputmode="text" autocomplete="off" placeholder="管理员密码（vae）" />
+              <button id="btn-admin-login" class="btn btn-ghost" type="button">登录</button>
+            </div>
+            <div class="row" style="margin: 0 0 14px 0;">
+              <select id="level-select" class="input select" aria-label="选择关卡" disabled>
+                <option value="1">第1关</option>
+                <option value="2">第2关</option>
+                <option value="3">第3关（Boss）</option>
+              </select>
+              <label class="toggle">
+                <input id="invincible" type="checkbox" />
+                <span>无敌</span>
+              </label>
+            </div>
+          </div>
           <div class="row">
             <button id="btn-start" class="btn btn-primary">开始游戏</button>
           </div>
