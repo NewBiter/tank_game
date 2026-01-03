@@ -325,7 +325,10 @@ function showFatalError(err) {
 
 const ui = {
   overlay: $("#overlay"),
+  app: $("#app"),
   btnStart: $("#btn-start"),
+  btnMode1: $("#btn-mode-1"),
+  btnMode2: $("#btn-mode-2"),
   btnPause: $("#btn-pause"),
   btnRestart: $("#btn-restart"),
   btnSound: $("#btn-sound"),
@@ -859,6 +862,7 @@ const state = {
   levelIndex: 0,
   levelCfg: LEVELS[0],
   pendingNextLevel: false,
+  mode: 2, // 1=单人(P1) 2=双人(P1+P2)
   scores: [0, 0], // [p1, p2]
   lives: [3, 3],  // [p1, p2]
   waveLeft: 10, // 总敌人数量
@@ -900,7 +904,7 @@ function loadLevel(levelIndex, { keepProgress }) {
   state.pendingNextLevel = false;
 
   // 需求：每一关开始时，刷新玩家 3 条命（分数仍保留）
-  state.lives = [3, 3];
+  state.lives = state.mode === 1 ? [3, 0] : [3, 3];
 
   state.waveLeft = state.levelCfg.waveTotal;
   state.enemiesAlive = 0;
@@ -915,19 +919,18 @@ function loadLevel(levelIndex, { keepProgress }) {
   fx.particles = [];
   fx.rings = [];
 
-  // 双人出生：左下 + 右下（每关都会重置位置）
+  // 出生：单人仅P1，双人P1+P2（每关都会重置位置）
   const y0 = WORLD_H - 2 * TILE - 14;
   const p1Spawn = findFreeTankPos(TILE * 2, y0, 28, 28, null);
-  const p2Spawn = findFreeTankPos(WORLD_W - TILE * 3, y0, 28, 28, null);
-  state.players = [
-    new Tank({ x: p1Spawn.x, y: p1Spawn.y, dir: DIR.UP, isPlayer: true, playerId: 1 }),
-    new Tank({ x: p2Spawn.x, y: p2Spawn.y, dir: DIR.UP, isPlayer: true, playerId: 2 }),
-  ];
-  // 每关开局都复活并给短暂无敌
-  state.players[0].alive = true;
-  state.players[1].alive = true;
-  state.players[0].invuln = 1.4;
-  state.players[1].invuln = 1.4;
+  state.players = [new Tank({ x: p1Spawn.x, y: p1Spawn.y, dir: DIR.UP, isPlayer: true, playerId: 1 })];
+  if (state.mode === 2) {
+    const p2Spawn = findFreeTankPos(WORLD_W - TILE * 3, y0, 28, 28, null);
+    state.players.push(new Tank({ x: p2Spawn.x, y: p2Spawn.y, dir: DIR.UP, isPlayer: true, playerId: 2 }));
+  }
+  for (const pl of state.players) {
+    pl.alive = true;
+    pl.invuln = 1.4;
+  }
 
   updateHUD();
   showLevelIntro();
@@ -971,7 +974,7 @@ function updateHUD() {
     if (p.buffs.pierceUntil > state.time) bs.push("穿甲");
     return `${label}${bs.length ? bs.join("/") : "-"}`;
   };
-  setText(ui.buffs, `${btxt(p1, "P1:")} | ${btxt(p2, "P2:")}`);
+  setText(ui.buffs, state.mode === 1 ? btxt(p1, "P1:") : `${btxt(p1, "P1:")} | ${btxt(p2, "P2:")}`);
   setText(ui.btnPause, state.paused ? "继续" : "暂停");
 }
 
@@ -1203,7 +1206,7 @@ function update(dt) {
     state.enemySpawnTimer = rand(0.8, 1.3);
   }
 
-  // 玩家（双人）
+  // 玩家（按模式）
   const p1 = state.players[0];
   const p2 = state.players[1];
   if (p1 && p1.alive) {
@@ -1216,7 +1219,7 @@ function update(dt) {
     if (moving) tryMoveTank(p1, v.x * p1.speed * dt, v.y * p1.speed * dt);
     if (inputP1.firePressed) fireFromTank(p1);
   }
-  if (p2 && p2.alive) {
+  if (state.mode === 2 && p2 && p2.alive) {
     p2.invuln = Math.max(0, p2.invuln - dt);
     p2.cooldown = Math.max(0, p2.cooldown - dt);
     const wantDir = dirFromInput(inputP2, moveP2);
@@ -2116,9 +2119,21 @@ function showMenu() {
   const h1 = panel?.querySelector("h1");
   const sub = panel?.querySelector(".sub");
   if (h1) h1.textContent = "坦克大战（三关制）";
-  if (sub) sub.textContent = "玩法创新：道具（护盾/连发/穿甲）与第3关Boss战（草丛可隐蔽）｜P1: WASD+空格｜P2: 方向键+回车｜P暂停";
+  if (sub) sub.textContent = state.mode === 1
+    ? "单人模式：P1(WASD+空格)｜玩法：三关制+道具+Boss战｜P暂停"
+    : "双人模式：P1(WASD+空格) + P2(方向键+回车)｜玩法：三关制+道具+Boss战｜P暂停";
   if (ui.btnStart) ui.btnStart.textContent = "开始游戏";
   startAction = "newrun";
+
+  // HUD显示切换
+  if (ui.app) ui.app.classList.toggle("single", state.mode === 1);
+  // 模式按钮样式
+  if (ui.btnMode1 && ui.btnMode2) {
+    ui.btnMode1.classList.toggle("btn-primary", state.mode === 1);
+    ui.btnMode1.classList.toggle("btn-ghost", state.mode !== 1);
+    ui.btnMode2.classList.toggle("btn-primary", state.mode === 2);
+    ui.btnMode2.classList.toggle("btn-ghost", state.mode !== 2);
+  }
 }
 
 function startGame() {
@@ -2156,6 +2171,19 @@ ui.btnRestart?.addEventListener("click", () => {
 ui.btnSound?.addEventListener("click", () => {
   audio.unlock();
   audio.toggleMute();
+});
+
+ui.btnMode1?.addEventListener("click", () => {
+  state.mode = 1;
+  // 单人模式下清空P2分数显示（避免误解）
+  state.scores[1] = 0;
+  showMenu();
+  updateHUD();
+});
+ui.btnMode2?.addEventListener("click", () => {
+  state.mode = 2;
+  showMenu();
+  updateHUD();
 });
 
 // 初始化
