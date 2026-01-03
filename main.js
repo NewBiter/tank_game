@@ -46,6 +46,8 @@ const ui = {
   lives1: $("#lives1") || $("#lives"),
   score2: $("#score2"),
   lives2: $("#lives2"),
+  level: $("#level"),
+  buffs: $("#buffs"),
   enemies: $("#enemies"),
 };
 
@@ -385,6 +387,10 @@ class Tank {
     this.cooldown = 0;
     this.alive = true;
     this.invuln = this.isPlayer ? 1.2 : 0;
+    this.hp = this.isPlayer ? 1 : 1;
+    this.maxHp = this.hp;
+    // 玩家道具Buff（时间戳：state.time）
+    this.buffs = this.isPlayer ? { shieldUntil: 0, rapidUntil: 0, pierceUntil: 0 } : null;
     this.ai = this.isPlayer ? null : {
       turnTimer: rand(0.2, 1.2),
       shootTimer: rand(0.3, 1.6),
@@ -395,12 +401,13 @@ class Tank {
 }
 
 class Bullet {
-  constructor({ x, y, dir, owner }) {
+  constructor({ x, y, dir, owner, speed, pierce }) {
     this.x = x; this.y = y;
     this.dir = dir;
     this.owner = owner; // "p1" | "p2" | "enemy"
     this.r = 4;
-    this.speed = 260;
+    this.speed = speed ?? 260;
+    this.pierce = pierce ?? 0; // 穿甲次数（只对砖墙生效）
     this.alive = true;
   }
   rect() { return { x: this.x - this.r, y: this.y - this.r, w: this.r * 2, h: this.r * 2 }; }
@@ -422,34 +429,119 @@ class Tile {
 // ===== 关卡 =====
 // 字符含义：
 // # 砖墙(可破坏)  S 钢墙(不可破坏)  ~ 水(不可穿越)  . 空地  G 草(不阻挡/覆盖层)  B 基地
-const LEVEL = [
-  "..........................",
-  "..####....S....####....S..",
-  "..#..#....S....#..#....S..",
-  "..####....S....####....S..",
-  "..........................",
-  "..~~~~..............~~~~..",
-  "..~~~~..####..####..~~~~..",
-  "........#..#..#..#........",
-  "..####..####..####..####..",
-  "..#..#................#..#",
-  "..####..S..S..S..S..####..",
-  "..........................",
-  "....G..G..G..G..G..G..G...",
-  "..........................",
-  "..####............####....",
-  "..#..#....####....#..#....",
-  "..####....#..#....####....",
-  "..........####............",
-  "...........BB.............",
-  "..........................",
+const LEVELS = [
+  {
+    name: "第1关：平原防线",
+    night: false,
+    waveTotal: 12,
+    aliveCap: 4,
+    enemySpeedMul: 1.0,
+    enemyBulletMul: 1.0,
+    enemyShootMin: 0.60,
+    enemyShootMax: 1.80,
+    alignEps: 10,
+    eliteChance: 0.00,
+    dropChance: 0.22,
+    layout: [
+      "..........................",
+      "..####....S....####....S..",
+      "..#..#....S....#..#....S..",
+      "..####....S....####....S..",
+      "..........................",
+      "..~~~~..............~~~~..",
+      "..~~~~..####..####..~~~~..",
+      "........#..#..#..#........",
+      "..####..####..####..####..",
+      "..#..#................#..#",
+      "..####..S..S..S..S..####..",
+      "..........................",
+      "....G..G..G..G..G..G..G...",
+      "..........................",
+      "..####............####....",
+      "..#..#....####....#..#....",
+      "..####....#..#....####....",
+      "..........####............",
+      "...........BB.............",
+      "..........................",
+    ],
+  },
+  {
+    name: "第2关：迷宫水道",
+    night: false,
+    waveTotal: 16,
+    aliveCap: 5,
+    enemySpeedMul: 1.08,
+    enemyBulletMul: 1.05,
+    enemyShootMin: 0.52,
+    enemyShootMax: 1.55,
+    alignEps: 9,
+    eliteChance: 0.16,
+    dropChance: 0.26,
+    layout: [
+      "....S......####......S....",
+      "..####..S..#..#..S..####..",
+      "..#..#..S..####..S..#..#..",
+      "..####......S......####...",
+      "..........~~~~~~..........",
+      "..S..####..~~~~..####..S..",
+      "..S..#..#........#..#..S..",
+      "..S..####..####..####..S..",
+      "......S....#..#....S......",
+      "..####....##..##....####..",
+      "..#..#....#....#....#..#..",
+      "..####..S.######.S..####..",
+      "..........G..G..........G.",
+      "..S..####..####..####..S..",
+      "..S..#..#........#..#..S..",
+      "..S..####..~~~~..####..S..",
+      "..........~~~~~~..........",
+      "...####......S......####..",
+      "...........BB.............",
+      "..........................",
+    ],
+  },
+  {
+    name: "第3关：夜战要塞（视野受限）",
+    night: true,
+    waveTotal: 22,
+    aliveCap: 6,
+    enemySpeedMul: 1.15,
+    enemyBulletMul: 1.12,
+    enemyShootMin: 0.42,
+    enemyShootMax: 1.25,
+    alignEps: 8,
+    eliteChance: 0.30,
+    dropChance: 0.30,
+    layout: [
+      "..S..####......####..S....",
+      "..S..#..#..S..#..#..S.....",
+      ".....####..S..####........",
+      "..~~~~......S......~~~~...",
+      "..~~~~..####..####..~~~~..",
+      "........#..#..#..#........",
+      "..####..####..####..####..",
+      "..#..#................#..#",
+      "..####..S..S..S..S..####..",
+      "..........................",
+      "....G..G..G..G..G..G..G...",
+      "..........................",
+      "..####..####..####..####..",
+      "..#..#..............#..#..",
+      "..####..S..S..S..S..####..",
+      "..............S...........",
+      "..~~~~..####..####..~~~~..",
+      "..~~~~..............~~~~..",
+      "...........BB.............",
+      "..........................",
+    ],
+  },
 ];
 
-function buildTiles() {
+function buildTiles(layout) {
   /** @type {Tile[]} */
   const tiles = [];
-  for (let y = 0; y < LEVEL.length; y++) {
-    const row = LEVEL[y];
+  for (let y = 0; y < layout.length; y++) {
+    const row = layout[y];
     for (let x = 0; x < row.length; x++) {
       const c = row[x];
       const wx = x * TILE;
@@ -470,17 +562,22 @@ const state = {
   paused: false,
   over: false,
   win: false,
+  time: 0, // 关卡内计时（秒，用于buff）
+  levelIndex: 0,
+  levelCfg: LEVELS[0],
+  pendingNextLevel: false,
   scores: [0, 0], // [p1, p2]
   lives: [3, 3],  // [p1, p2]
   waveLeft: 10, // 总敌人数量
   enemiesAlive: 0,
   enemySpawnTimer: 0,
-  tiles: buildTiles(),
+  tiles: buildTiles(LEVELS[0].layout),
   grass: [], // 覆盖层
   solids: [],
   players: /** @type {Tank[]} */ ([]),
   enemies: /** @type {Tank[]} */ ([]),
   bullets: /** @type {Bullet[]} */ ([]),
+  powerUps: /** @type {Array<{x:number,y:number,type:"shield"|"rapid"|"pierce",life:number}>} */ ([]),
   lastTime: 0,
 };
 
@@ -490,30 +587,70 @@ function splitTiles() {
 }
 splitTiles();
 
-function resetGame() {
+let startAction = "newrun"; // "newrun" | "nextlevel"
+
+function startNewRun() {
+  state.scores = [0, 0];
+  state.lives = [3, 3];
+  loadLevel(0, { keepProgress: true });
+}
+
+function loadLevel(levelIndex, { keepProgress }) {
+  state.levelIndex = clamp(levelIndex, 0, LEVELS.length - 1);
+  state.levelCfg = LEVELS[state.levelIndex];
+  state.time = 0;
   state.running = true;
   state.paused = false;
   state.over = false;
   state.win = false;
-  state.scores = [0, 0];
-  state.lives = [3, 3];
-  state.waveLeft = 12;
+  state.pendingNextLevel = false;
+
+  state.waveLeft = state.levelCfg.waveTotal;
   state.enemiesAlive = 0;
   state.enemySpawnTimer = 0.2;
-  state.tiles = buildTiles();
+  state.tiles = buildTiles(state.levelCfg.layout);
   splitTiles();
+
   state.bullets = [];
   state.enemies = [];
+  state.powerUps = [];
+  fx.particles = [];
+  fx.rings = [];
 
-  // 双人出生：左下 + 右下
+  // 双人出生：左下 + 右下（每关都会重置位置；分数/生命按 keepProgress 保留）
   const y0 = WORLD_H - 2 * TILE - 14;
-  const p1Spawn = findFreeTankPos(TILE * 2, y0, 28, 28);
-  const p2Spawn = findFreeTankPos(WORLD_W - TILE * 3, y0, 28, 28);
+  const p1Spawn = findFreeTankPos(TILE * 2, y0, 28, 28, null);
+  const p2Spawn = findFreeTankPos(WORLD_W - TILE * 3, y0, 28, 28, null);
   state.players = [
     new Tank({ x: p1Spawn.x, y: p1Spawn.y, dir: DIR.UP, isPlayer: true, playerId: 1 }),
     new Tank({ x: p2Spawn.x, y: p2Spawn.y, dir: DIR.UP, isPlayer: true, playerId: 2 }),
   ];
+  // 生命为0的玩家该关不复活
+  state.players[0].alive = (state.lives[0] > 0);
+  state.players[1].alive = (state.lives[1] > 0);
+  state.players[0].invuln = state.players[0].alive ? 1.4 : 0;
+  state.players[1].invuln = state.players[1].alive ? 1.4 : 0;
 
+  updateHUD();
+  showLevelIntro();
+}
+
+function showLevelIntro() {
+  // 关卡开始提示：短暂停留，点击继续
+  if (!ui.overlay) return;
+  ui.overlay.classList.remove("hidden");
+  const panel = ui.overlay.querySelector(".panel");
+  const h1 = panel?.querySelector("h1");
+  const sub = panel?.querySelector(".sub");
+  if (h1) h1.textContent = state.levelCfg.name;
+  if (sub) sub.textContent = state.levelCfg.night
+    ? "玩法创新：夜战视野受限 + 道具（护盾/连发/穿甲）"
+    : "玩法创新：击败敌人掉落道具（护盾/连发/穿甲）";
+  if (ui.btnStart) ui.btnStart.textContent = "开始本关";
+  startAction = "nextlevel";
+  // 暂停更新直到点击
+  state.paused = true;
+  state.pendingNextLevel = false;
   updateHUD();
 }
 
@@ -522,7 +659,20 @@ function updateHUD() {
   setText(ui.lives1, state.lives[0]);
   setText(ui.score2, state.scores[1]);
   setText(ui.lives2, state.lives[1]);
+  setText(ui.level, `${state.levelIndex + 1}/${LEVELS.length}`);
   setText(ui.enemies, state.waveLeft + state.enemiesAlive);
+  // Buff展示（简短）
+  const p1 = state.players?.[0];
+  const p2 = state.players?.[1];
+  const btxt = (p, label) => {
+    if (!p || !p.buffs) return `${label}-`;
+    const bs = [];
+    if (p.buffs.shieldUntil > state.time) bs.push("护盾");
+    if (p.buffs.rapidUntil > state.time) bs.push("连发");
+    if (p.buffs.pierceUntil > state.time) bs.push("穿甲");
+    return `${label}${bs.length ? bs.join("/") : "-"}`;
+  };
+  setText(ui.buffs, `${btxt(p1, "P1:")} | ${btxt(p2, "P2:")}`);
   setText(ui.btnPause, state.paused ? "继续" : "暂停");
 }
 
@@ -557,13 +707,19 @@ function fireFromTank(tank) {
   const v = DIR_V[tank.dir];
   const ox = c.x + v.x * (tank.w / 2 + 6);
   const oy = c.y + v.y * (tank.h / 2 + 6);
+  const owner = tank.isPlayer ? (tank.playerId === 2 ? "p2" : "p1") : "enemy";
+  const bulletSpeed = 260 * (tank.isPlayer ? 1 : (state.levelCfg?.enemyBulletMul ?? 1));
+  const pierce = (tank.isPlayer && tank.buffs && tank.buffs.pierceUntil > state.time) ? 1 : 0;
   state.bullets.push(new Bullet({
     x: ox,
     y: oy,
     dir: tank.dir,
-    owner: tank.isPlayer ? (tank.playerId === 2 ? "p2" : "p1") : "enemy",
+    owner,
+    speed: bulletSpeed,
+    pierce,
   }));
-  tank.cooldown = tank.isPlayer ? 0.24 : 0.55;
+  if (tank.isPlayer && tank.buffs && tank.buffs.rapidUntil > state.time) tank.cooldown = 0.12;
+  else tank.cooldown = tank.isPlayer ? 0.24 : 0.55;
 }
 
 function damageBaseAt(tile) {
@@ -587,7 +743,7 @@ function gameOver(win) {
   const h1 = panel?.querySelector("h1");
   const sub = panel?.querySelector(".sub");
   const btn = ui.btnStart;
-  if (h1) h1.textContent = win ? "胜利！" : "游戏结束";
+  if (h1) h1.textContent = win ? "三关通关！" : "游戏结束";
   const total = state.scores[0] + state.scores[1];
   if (sub) {
     sub.textContent = win
@@ -625,7 +781,18 @@ function spawnEnemy() {
     if (!canSpawnAt(x, y)) continue;
     const e = new Tank({ x, y, dir: DIR.DOWN, isPlayer: false });
     e.invuln = 0.2;
-    e.speed = 86 + irand(-6, 8);
+    e.speed = (86 + irand(-6, 8)) * (state.levelCfg?.enemySpeedMul ?? 1);
+    // 精英敌人：2点血，更频繁射击
+    if (Math.random() < (state.levelCfg?.eliteChance ?? 0)) {
+      e.hp = 2;
+      e.maxHp = 2;
+      e.speed *= 1.06;
+      e.ai.shootTimer = rand(Math.max(0.22, (state.levelCfg?.enemyShootMin ?? 0.4) * 0.7), Math.max(0.75, (state.levelCfg?.enemyShootMax ?? 1.2) * 0.7));
+    } else {
+      e.hp = 1;
+      e.maxHp = 1;
+      e.ai.shootTimer = rand(state.levelCfg?.enemyShootMin ?? 0.6, state.levelCfg?.enemyShootMax ?? 1.8);
+    }
     state.enemies.push(e);
     state.waveLeft -= 1;
     state.enemiesAlive += 1;
@@ -647,8 +814,9 @@ function aiUpdateEnemy(e, dt) {
     const pc = p.center();
     const dx = pc.x - ec.x;
     const dy = pc.y - ec.y;
-    const alignedX = Math.abs(dx) < 10;
-    const alignedY = Math.abs(dy) < 10;
+    const eps = state.levelCfg?.alignEps ?? 10;
+    const alignedX = Math.abs(dx) < eps;
+    const alignedY = Math.abs(dy) < eps;
     if (alignedX || alignedY) {
       // 视线被阻挡？
       const blockers = state.tiles.filter(t => t.blocksBullets() && t.type !== "grass");
@@ -661,7 +829,7 @@ function aiUpdateEnemy(e, dt) {
         if (alignedY) e.dir = dx > 0 ? DIR.RIGHT : DIR.LEFT;
         if (e.ai.shootTimer <= 0) {
           fireFromTank(e);
-          e.ai.shootTimer = rand(0.4, 1.3);
+          e.ai.shootTimer = rand(state.levelCfg?.enemyShootMin ?? 0.4, state.levelCfg?.enemyShootMax ?? 1.3);
         }
       }
     }
@@ -682,7 +850,7 @@ function aiUpdateEnemy(e, dt) {
   // 随机射击
   if (e.ai.shootTimer <= 0) {
     fireFromTank(e);
-    e.ai.shootTimer = rand(0.6, 1.8);
+    e.ai.shootTimer = rand(state.levelCfg?.enemyShootMin ?? 0.6, state.levelCfg?.enemyShootMax ?? 1.8);
   }
 }
 
@@ -715,10 +883,12 @@ function update(dt) {
     return;
   }
 
+  state.time += dt;
+
   // 敌人刷怪
   state.enemySpawnTimer -= dt;
   if (state.enemySpawnTimer <= 0) {
-    const wantAliveCap = 4; // 同屏最大敌人数
+    const wantAliveCap = state.levelCfg?.aliveCap ?? 4; // 同屏最大敌人数（随关卡提升）
     if (state.enemiesAlive < wantAliveCap && state.waveLeft > 0) spawnEnemy();
     state.enemySpawnTimer = rand(0.8, 1.3);
   }
@@ -774,7 +944,6 @@ function update(dt) {
     for (const t of state.tiles) {
       if (!t.blocksBullets()) continue;
       if (rectsOverlap(br, t.rect())) {
-        b.alive = false;
         // 命中火花（砖墙更强）
         spawnImpact(b.x, b.y, b.owner, t.type === "brick" ? 1.15 : 0.85);
         if (t.type === "brick") {
@@ -785,9 +954,18 @@ function update(dt) {
             // 砖块碎裂小爆
             spawnImpact(t.x + TILE / 2, t.y + TILE / 2, b.owner, 1.2);
           }
+          if (b.pierce > 0) {
+            b.pierce -= 1;
+          } else {
+            b.alive = false;
+          }
         } else if (t.type === "base") {
+          b.alive = false;
           damageBaseAt(t);
           spawnImpact(t.x + TILE / 2, t.y + TILE / 2, "enemy", 1.4);
+        } else {
+          // steel
+          b.alive = false;
         }
         break;
       }
@@ -801,7 +979,15 @@ function update(dt) {
         if (!p || !p.alive) continue;
         if (rectsOverlap(br, p.rect()) && p.invuln <= 0) {
           b.alive = false;
-          killPlayer(i);
+          // 护盾：吸收一次伤害
+          if (p.buffs && p.buffs.shieldUntil > state.time) {
+            p.buffs.shieldUntil = 0;
+            p.invuln = 0.6;
+            const cc = p.center();
+            spawnImpact(cc.x, cc.y, "enemy", 1.1);
+          } else {
+            killPlayer(i);
+          }
           break;
         }
       }
@@ -810,7 +996,13 @@ function update(dt) {
         if (!e.alive) continue;
         if (rectsOverlap(br, e.rect()) && e.invuln <= 0) {
           b.alive = false;
-          killEnemy(e, b.owner);
+          e.hp -= 1;
+          const cc = e.center();
+          if (e.hp <= 0) killEnemy(e, b.owner);
+          else {
+            e.invuln = 0.25;
+            spawnImpact(cc.x, cc.y, b.owner, 1.0);
+          }
           break;
         }
       }
@@ -823,13 +1015,31 @@ function update(dt) {
 
   // 胜利条件：敌人全部刷完且全灭
   if (state.waveLeft <= 0 && state.enemiesAlive <= 0 && !state.over) {
-    gameOver(true);
+    onLevelCleared();
   }
 
   updateHUD();
 
   // 特效更新（在清理之后，避免引用已死亡对象）
   updateFX(dt);
+
+  // 道具更新/拾取
+  for (const pu of state.powerUps) pu.life -= dt;
+  state.powerUps = state.powerUps.filter(pu => pu.life > 0);
+  for (let i = 0; i < state.players.length; i++) {
+    const p = state.players[i];
+    if (!p || !p.alive || !p.buffs) continue;
+    const pr = p.rect();
+    for (const pu of state.powerUps) {
+      const box = { x: pu.x - 9, y: pu.y - 9, w: 18, h: 18 };
+      if (rectsOverlap(pr, box)) {
+        applyPowerUp(p, pu.type);
+        spawnImpact(pu.x, pu.y, i === 0 ? "p1" : "p2", 1.0);
+        pu.life = 0;
+      }
+    }
+  }
+  state.powerUps = state.powerUps.filter(pu => pu.life > 0);
 
   // 清理一次性边沿输入
   inputP1.firePressed = false;
@@ -844,6 +1054,11 @@ function killEnemy(e, owner) {
   state.enemiesAlive = Math.max(0, state.enemiesAlive - 1);
   if (owner === "p2") state.scores[1] += 100;
   else if (owner === "p1") state.scores[0] += 100;
+
+  // 掉落道具（玩法创新）
+  if (Math.random() < (state.levelCfg?.dropChance ?? 0.22)) {
+    spawnPowerUp(c.x, c.y);
+  }
 }
 
 function killPlayer(playerIdx) {
@@ -951,6 +1166,43 @@ function togglePause() {
   if (!state.running || state.over) return;
   state.paused = !state.paused;
   updateHUD();
+}
+
+function applyPowerUp(player, type) {
+  if (!player.buffs) return;
+  const dur = 7.5;
+  if (type === "shield") {
+    player.buffs.shieldUntil = state.time + 10;
+  } else if (type === "rapid") {
+    player.buffs.rapidUntil = state.time + dur;
+  } else if (type === "pierce") {
+    player.buffs.pierceUntil = state.time + dur;
+  }
+}
+
+function spawnPowerUp(x, y) {
+  const r = Math.random();
+  const type = r < 0.34 ? "shield" : (r < 0.67 ? "rapid" : "pierce");
+  state.powerUps.push({ x, y, type, life: 10.0 });
+}
+
+function onLevelCleared() {
+  // 进入下一关或通关
+  if (state.levelIndex >= LEVELS.length - 1) {
+    gameOver(true);
+    return;
+  }
+  state.running = false;
+  state.paused = true;
+  state.pendingNextLevel = true;
+  if (ui.overlay) ui.overlay.classList.remove("hidden");
+  const panel = ui.overlay?.querySelector(".panel");
+  const h1 = panel?.querySelector("h1");
+  const sub = panel?.querySelector(".sub");
+  if (h1) h1.textContent = "本关完成！";
+  if (sub) sub.textContent = `即将进入：${LEVELS[state.levelIndex + 1].name}（难度提升 + 新机制）`;
+  if (ui.btnStart) ui.btnStart.textContent = "进入下一关";
+  startAction = "nextlevel";
 }
 
 // ===== 渲染 =====
@@ -1249,6 +1501,67 @@ function drawBullet(vp, b) {
   ctx.restore();
 }
 
+function drawPowerUp(vp, pu) {
+  if (!ctx) return;
+  const p = worldToScreen(vp, pu.x, pu.y);
+  const c = pu.type === "shield" ? "#93c5fd" : (pu.type === "rapid" ? "#fbbf24" : "#a78bfa");
+  const t = clamp(pu.life / 10, 0, 1);
+  const rr = (8 + (1 - t) * 2) * vp.scale;
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.globalAlpha = 0.9;
+  // 外发光
+  const g = ctx.createRadialGradient(p.x, p.y, rr * 0.2, p.x, p.y, rr * 2.2);
+  g.addColorStop(0, "rgba(255,255,255,.9)");
+  g.addColorStop(0.35, `${c}CC`);
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, rr * 2.2, 0, Math.PI * 2);
+  ctx.fill();
+  // 核心
+  ctx.globalAlpha = 0.95;
+  ctx.fillStyle = c;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, rr, 0, Math.PI * 2);
+  ctx.fill();
+  // 图标
+  ctx.globalAlpha = 0.95;
+  ctx.fillStyle = "rgba(0,0,0,.35)";
+  ctx.font = `800 ${Math.max(10, 12 * vp.scale)}px ui-sans-serif,system-ui`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(pu.type === "shield" ? "盾" : (pu.type === "rapid" ? "连" : "穿"), p.x, p.y + 0.5);
+  ctx.restore();
+}
+
+function drawNightFog(vp) {
+  if (!ctx) return;
+  ctx.save();
+  // 先盖一层黑雾
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = "rgba(0,0,0,.58)";
+  ctx.fillRect(vp.offsetX, vp.offsetY, WORLD_W * vp.scale, WORLD_H * vp.scale);
+
+  // 再用 destination-out 挖出视野
+  ctx.globalCompositeOperation = "destination-out";
+  for (const pl of state.players) {
+    if (!pl || !pl.alive) continue;
+    const c = pl.center();
+    const p = worldToScreen(vp, c.x, c.y);
+    const r0 = 30 * vp.scale;
+    const r1 = 180 * vp.scale;
+    const g = ctx.createRadialGradient(p.x, p.y, r0, p.x, p.y, r1);
+    g.addColorStop(0, "rgba(0,0,0,1)");
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r1, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 function drawOverlayHints(vp) {
   if (!state.running && !state.over) return;
   if (!state.paused) return;
@@ -1280,11 +1593,17 @@ function render() {
   // 子弹
   for (const b of state.bullets) if (b.alive) drawBullet(vp, b);
 
+  // 道具
+  for (const pu of state.powerUps) drawPowerUp(vp, pu);
+
   // 草地覆盖层（能遮挡坦克/子弹，增加层次）
   for (const g of state.grass) drawGrass(vp, g);
 
   // 爆炸/火花特效（放在最上层，避免被草盖住）
   drawFX(vp);
+
+  // 第3关：夜战视野（玩法创新）
+  if (state.levelCfg?.night) drawNightFog(vp);
 
   drawOverlayHints(vp);
 }
@@ -1306,15 +1625,30 @@ function showMenu() {
   const panel = ui.overlay?.querySelector(".panel");
   const h1 = panel?.querySelector("h1");
   const sub = panel?.querySelector(".sub");
-  if (h1) h1.textContent = "坦克大战";
-  if (sub) sub.textContent = "P1: WASD+空格｜P2: 方向键+回车｜P暂停";
+  if (h1) h1.textContent = "坦克大战（三关制）";
+  if (sub) sub.textContent = "玩法创新：道具（护盾/连发/穿甲）与第3关夜战视野｜P1: WASD+空格｜P2: 方向键+回车｜P暂停";
   if (ui.btnStart) ui.btnStart.textContent = "开始游戏";
+  startAction = "newrun";
 }
 
 function startGame() {
-  resetGame();
-  state.running = true;
-  if (ui.overlay) ui.overlay.classList.add("hidden");
+  if (startAction === "newrun") {
+    startNewRun();
+    if (ui.overlay) ui.overlay.classList.add("hidden");
+    state.paused = false;
+  } else {
+    // 继续当前关卡（从intro进入），或进入下一关（从通关提示进入）
+    if (ui.overlay) ui.overlay.classList.add("hidden");
+    if (!state.over && state.pendingNextLevel && state.levelIndex < LEVELS.length - 1) {
+      // 进入下一关
+      loadLevel(state.levelIndex + 1, { keepProgress: true });
+      if (ui.overlay) ui.overlay.classList.add("hidden");
+      state.paused = false;
+    } else {
+      state.running = true;
+      state.paused = false;
+    }
+  }
   updateHUD();
 }
 
@@ -1325,7 +1659,7 @@ ui.btnPause?.addEventListener("click", () => {
   togglePause();
 });
 ui.btnRestart?.addEventListener("click", () => {
-  startGame();
+  showMenu();
 });
 
 // 初始化
