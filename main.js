@@ -899,6 +899,9 @@ function loadLevel(levelIndex, { keepProgress }) {
   state.win = false;
   state.pendingNextLevel = false;
 
+  // 需求：每一关开始时，刷新玩家 3 条命（分数仍保留）
+  state.lives = [3, 3];
+
   state.waveLeft = state.levelCfg.waveTotal;
   state.enemiesAlive = 0;
   state.enemySpawnTimer = 0.2;
@@ -912,7 +915,7 @@ function loadLevel(levelIndex, { keepProgress }) {
   fx.particles = [];
   fx.rings = [];
 
-  // 双人出生：左下 + 右下（每关都会重置位置；分数/生命按 keepProgress 保留）
+  // 双人出生：左下 + 右下（每关都会重置位置）
   const y0 = WORLD_H - 2 * TILE - 14;
   const p1Spawn = findFreeTankPos(TILE * 2, y0, 28, 28, null);
   const p2Spawn = findFreeTankPos(WORLD_W - TILE * 3, y0, 28, 28, null);
@@ -920,11 +923,11 @@ function loadLevel(levelIndex, { keepProgress }) {
     new Tank({ x: p1Spawn.x, y: p1Spawn.y, dir: DIR.UP, isPlayer: true, playerId: 1 }),
     new Tank({ x: p2Spawn.x, y: p2Spawn.y, dir: DIR.UP, isPlayer: true, playerId: 2 }),
   ];
-  // 生命为0的玩家该关不复活
-  state.players[0].alive = (state.lives[0] > 0);
-  state.players[1].alive = (state.lives[1] > 0);
-  state.players[0].invuln = state.players[0].alive ? 1.4 : 0;
-  state.players[1].invuln = state.players[1].alive ? 1.4 : 0;
+  // 每关开局都复活并给短暂无敌
+  state.players[0].alive = true;
+  state.players[1].alive = true;
+  state.players[0].invuln = 1.4;
+  state.players[1].invuln = 1.4;
 
   updateHUD();
   showLevelIntro();
