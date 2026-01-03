@@ -791,8 +791,11 @@ const LEVELS = [
     ],
   },
   {
-    name: "第3关：夜战要塞（视野受限）",
-    night: true,
+    name: "第3关：Boss要塞",
+    night: false,
+    fog: false,
+    hasBoss: true,
+    grassBlocksSight: true,
     waveTotal: 22,
     aliveCap: 6,
     enemySpeedMul: 1.15,
@@ -868,6 +871,7 @@ const state = {
   enemies: /** @type {Tank[]} */ ([]),
   bullets: /** @type {Bullet[]} */ ([]),
   powerUps: /** @type {Array<{x:number,y:number,type:"shield"|"rapid"|"pierce",life:number}>} */ ([]),
+  boss: /** @type {null|{x:number,y:number,w:number,h:number,dir:number,speed:number,cooldown:number,invuln:number,alive:boolean,hp:number,maxHp:number,ai:{turn:number,shoot:number,burst:number,spawn:number,phase:number}}} */ (null),
   lastTime: 0,
 };
 
@@ -904,6 +908,7 @@ function loadLevel(levelIndex, { keepProgress }) {
   state.bullets = [];
   state.enemies = [];
   state.powerUps = [];
+  state.boss = null;
   fx.particles = [];
   fx.rings = [];
 
@@ -933,8 +938,8 @@ function showLevelIntro() {
   const h1 = panel?.querySelector("h1");
   const sub = panel?.querySelector(".sub");
   if (h1) h1.textContent = state.levelCfg.name;
-  if (sub) sub.textContent = state.levelCfg.night
-    ? "玩法创新：夜战视野受限 + 道具（护盾/连发/穿甲）"
+  if (sub) sub.textContent = state.levelCfg.hasBoss
+    ? "玩法创新：Boss战 + 草丛隐蔽 + 道具（护盾/连发/穿甲）"
     : "玩法创新：击败敌人掉落道具（护盾/连发/穿甲）";
   if (ui.btnStart) ui.btnStart.textContent = "开始本关";
   startAction = "nextlevel";
@@ -950,7 +955,8 @@ function updateHUD() {
   setText(ui.score2, state.scores[1]);
   setText(ui.lives2, state.lives[1]);
   setText(ui.level, `${state.levelIndex + 1}/${LEVELS.length}`);
-  setText(ui.enemies, state.waveLeft + state.enemiesAlive);
+  const bossAlive = !!(state.boss && state.boss.alive);
+  setText(ui.enemies, state.waveLeft + state.enemiesAlive + (bossAlive ? 1 : 0));
   // Buff展示（简短）
   const p1 = state.players?.[0];
   const p2 = state.players?.[1];
@@ -984,6 +990,10 @@ function tryMoveTank(tank, dx, dy) {
   for (const e of state.enemies) {
     if (!e.alive || e === tank) continue;
     if (rectsOverlap(next, e.rect())) return false;
+  }
+  if (state.boss && state.boss.alive && tank !== state.boss) {
+    const br = { x: state.boss.x, y: state.boss.y, w: state.boss.w, h: state.boss.h };
+    if (rectsOverlap(next, br)) return false;
   }
   tank.x = next.x; tank.y = next.y;
   return true;
@@ -1059,6 +1069,10 @@ function canSpawnAt(x, y) {
   for (const tile of state.solids) if (rectsOverlap(box, tile.rect())) return false;
   for (const p of state.players) if (p && p.alive && rectsOverlap(box, p.rect())) return false;
   for (const e of state.enemies) if (e.alive && rectsOverlap(box, e.rect())) return false;
+  if (state.boss && state.boss.alive) {
+    const br = { x: state.boss.x, y: state.boss.y, w: state.boss.w, h: state.boss.h };
+    if (rectsOverlap(box, br)) return false;
+  }
   return true;
 }
 
@@ -1110,7 +1124,7 @@ function aiUpdateEnemy(e, dt) {
     if (alignedX || alignedY) {
       // 视线被阻挡？
       const blockers = state.tiles.filter(t => {
-        if (t.type === "grass") return !!state.levelCfg?.night; // 第3关：草丛可遮挡视线
+        if (t.type === "grass") return !!state.levelCfg?.grassBlocksSight; // Boss关：草丛可遮挡视线
         return t.blocksBullets();
       });
       let blocked = false;
@@ -1218,6 +1232,11 @@ function update(dt) {
     aiUpdateEnemy(e, dt);
   }
 
+  // Boss
+  if (state.boss && state.boss.alive) {
+    updateBoss(dt);
+  }
+
   // 子弹
   for (const b of state.bullets) {
     if (!b.alive) continue;
@@ -1291,6 +1310,19 @@ function update(dt) {
         }
       }
     } else if (b.owner === "p1" || b.owner === "p2") {
+      // 先打Boss
+      if (state.boss && state.boss.alive) {
+        const brBoss = { x: state.boss.x, y: state.boss.y, w: state.boss.w, h: state.boss.h };
+        if (rectsOverlap(br, brBoss) && state.boss.invuln <= 0) {
+          b.alive = false;
+          state.boss.hp -= 1;
+          state.boss.invuln = 0.08;
+          const cc = { x: state.boss.x + state.boss.w / 2, y: state.boss.y + state.boss.h / 2 };
+          spawnImpact(cc.x, cc.y, b.owner, 1.2);
+          if (state.boss.hp <= 0) killBoss(b.owner);
+        }
+      }
+      if (!b.alive) continue;
       for (const e of state.enemies) {
         if (!e.alive) continue;
         if (rectsOverlap(br, e.rect()) && e.invuln <= 0) {
@@ -1312,9 +1344,14 @@ function update(dt) {
   state.bullets = state.bullets.filter(b => b.alive);
   state.enemies = state.enemies.filter(e => e.alive);
 
-  // 胜利条件：敌人全部刷完且全灭
+  // 胜利条件：敌人全部刷完且全灭；若本关有Boss，则需要击败Boss
   if (state.waveLeft <= 0 && state.enemiesAlive <= 0 && !state.over) {
-    onLevelCleared();
+    if (state.levelCfg?.hasBoss) {
+      if (!state.boss) spawnBoss();
+      else if (!state.boss.alive) onLevelCleared();
+    } else {
+      onLevelCleared();
+    }
   }
 
   updateHUD();
@@ -1345,6 +1382,83 @@ function update(dt) {
   inputP2.firePressed = false;
 }
 
+function updateBoss(dt) {
+  const b = state.boss;
+  if (!b || !b.alive) return;
+  b.invuln = Math.max(0, b.invuln - dt);
+  b.cooldown = Math.max(0, b.cooldown - dt);
+  b.ai.turn -= dt;
+  b.ai.shoot -= dt;
+  b.ai.burst -= dt;
+  b.ai.spawn -= dt;
+
+  // 行为：随机巡航 + 贴近最近玩家轴向瞄准
+  const target = pickNearestAlivePlayer({ center: () => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 }) });
+  if (target) {
+    const bc = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+    const pc = target.center();
+    const dx = pc.x - bc.x;
+    const dy = pc.y - bc.y;
+    // 朝更大位移轴对齐
+    if (Math.abs(dx) > Math.abs(dy)) b.dir = dx > 0 ? DIR.RIGHT : DIR.LEFT;
+    else b.dir = dy > 0 ? DIR.DOWN : DIR.UP;
+  }
+
+  if (b.ai.turn <= 0) {
+    // 偶尔换方向制造压迫
+    b.dir = irand(0, 3);
+    b.ai.turn = rand(0.6, 1.5);
+  }
+
+  // 移动（复用碰撞：临时构造成 tank-like）
+  const v = DIR_V[b.dir];
+  const moved = tryMoveTank(b, v.x * b.speed * dt, v.y * b.speed * dt);
+  if (!moved) {
+    b.dir = irand(0, 3);
+    b.ai.turn = rand(0.3, 0.9);
+  }
+
+  // 点射
+  if (b.ai.shoot <= 0) {
+    fireFromBoss(b, b.dir);
+    b.ai.shoot = rand(0.32, 0.78);
+  }
+
+  // 弹幕：四向
+  if (b.ai.burst <= 0) {
+    fireFromBoss(b, DIR.UP);
+    fireFromBoss(b, DIR.RIGHT);
+    fireFromBoss(b, DIR.DOWN);
+    fireFromBoss(b, DIR.LEFT);
+    b.ai.burst = rand(1.1, 2.0);
+  }
+
+  // 召唤小怪
+  if (b.ai.spawn <= 0 && (state.enemiesAlive < (state.levelCfg?.aliveCap ?? 6))) {
+    // 直接刷一个普通敌人
+    spawnEnemy();
+    b.ai.spawn = rand(2.6, 4.8);
+  }
+}
+
+function fireFromBoss(boss, dir) {
+  if (!boss.alive) return;
+  if (boss.cooldown > 0) return;
+  const c = { x: boss.x + boss.w / 2, y: boss.y + boss.h / 2 };
+  const v = DIR_V[dir];
+  const ox = c.x + v.x * (boss.w / 2 + 8);
+  const oy = c.y + v.y * (boss.h / 2 + 8);
+  state.bullets.push(new Bullet({
+    x: ox,
+    y: oy,
+    dir,
+    owner: "enemy",
+    speed: 300 * (state.levelCfg?.enemyBulletMul ?? 1),
+    pierce: 0,
+  }));
+  boss.cooldown = 0.16;
+}
+
 function killEnemy(e, owner) {
   // 爆炸（世界坐标）
   const c = e.center();
@@ -1358,6 +1472,49 @@ function killEnemy(e, owner) {
   if (Math.random() < (state.levelCfg?.dropChance ?? 0.22)) {
     spawnPowerUp(c.x, c.y);
   }
+}
+
+function spawnBoss() {
+  // Boss出现：放在上方中间偏上
+  const w = 46, h = 46;
+  const desiredX = WORLD_W / 2 - w / 2;
+  const desiredY = TILE * 2;
+  const pos = findFreeTankPos(desiredX, desiredY, w, h, null);
+  state.boss = {
+    x: pos.x, y: pos.y, w, h,
+    dir: DIR.DOWN,
+    speed: 70 * (state.levelCfg?.enemySpeedMul ?? 1),
+    cooldown: 0,
+    invuln: 0.8,
+    alive: true,
+    hp: 18,
+    maxHp: 18,
+    ai: { turn: rand(0.6, 1.4), shoot: rand(0.35, 0.9), burst: rand(1.2, 2.2), spawn: rand(2.4, 4.2), phase: 0 },
+  };
+  // 提示：Boss登场
+  if (ui.overlay) {
+    ui.overlay.classList.remove("hidden");
+    const panel = ui.overlay.querySelector(".panel");
+    const h1 = panel?.querySelector("h1");
+    const sub = panel?.querySelector(".sub");
+    if (h1) h1.textContent = "Boss登场！";
+    if (sub) sub.textContent = "击败Boss即可通关（草丛可用于隐蔽）";
+    if (ui.btnStart) ui.btnStart.textContent = "继续战斗";
+    startAction = "nextlevel";
+    state.paused = true;
+  }
+  updateHUD();
+}
+
+function killBoss(owner) {
+  if (!state.boss) return;
+  const cc = { x: state.boss.x + state.boss.w / 2, y: state.boss.y + state.boss.h / 2 };
+  spawnExplosion(cc.x, cc.y, owner, 1.8);
+  state.boss.alive = false;
+  // 奖励分
+  if (owner === "p2") state.scores[1] += 1200;
+  else if (owner === "p1") state.scores[0] += 1200;
+  updateHUD();
 }
 
 function killPlayer(playerIdx) {
@@ -1398,6 +1555,11 @@ function isRectFree(box) {
     if (!e.alive) continue;
     if (rectsOverlap(box, e.rect())) return false;
   }
+  // Boss阻挡
+  if (state.boss && state.boss.alive) {
+    const br = { x: state.boss.x, y: state.boss.y, w: state.boss.w, h: state.boss.h };
+    if (rectsOverlap(box, br)) return false;
+  }
   // 玩家阻挡（避免出生压坦克）
   for (const p of state.players) {
     if (!p || !p.alive) continue;
@@ -1416,6 +1578,10 @@ function isRectFreeIgnoring(box, ignoreTank) {
   for (const e of state.enemies) {
     if (!e.alive) continue;
     if (rectsOverlap(box, e.rect())) return false;
+  }
+  if (state.boss && state.boss.alive && ignoreTank !== state.boss) {
+    const br = { x: state.boss.x, y: state.boss.y, w: state.boss.w, h: state.boss.h };
+    if (rectsOverlap(box, br)) return false;
   }
   for (const p of state.players) {
     if (!p || !p.alive || p === ignoreTank) continue;
@@ -1596,7 +1762,7 @@ function drawGrass(vp, t, dense = false) {
   ctx.globalAlpha = dense ? 0.78 : 0.55;
   ctx.fillStyle = dense ? "rgba(16,185,129,.52)" : "rgba(34,197,94,.35)";
   ctx.fillRect(p.x, p.y, w, h);
-  // 线条干扰控制：夜战/隐蔽草丛减少笔触
+  // 线条干扰控制：隐蔽草丛减少笔触
   ctx.globalAlpha = dense ? 0.55 : 0.85;
   ctx.strokeStyle = dense ? "rgba(16,185,129,.55)" : "rgba(34,197,94,.65)";
   ctx.lineWidth = 1;
@@ -1611,40 +1777,7 @@ function drawGrass(vp, t, dense = false) {
   ctx.restore();
 }
 
-function drawGrassCoverForPlayers(vp) {
-  // 只在玩家站进草丛时，额外绘制一层“更厚的草”，实现可隐藏己方坦克
-  for (const pl of state.players) {
-    if (!pl || !pl.alive) continue;
-    const pr = pl.rect();
-    for (const g of state.grass) {
-      const gr = g.rect();
-      if (rectsOverlap(pr, gr)) drawGrass(vp, g, true);
-    }
-  }
-}
-
-function drawFriendlyAlwaysVisible(vp) {
-  // 夜战机制改造：两位己方坦克始终可见（不依赖视野圈）
-  ctx.save();
-  ctx.globalAlpha = 0.95;
-  for (const pl of state.players) {
-    if (!pl || !pl.alive) continue;
-    drawTank(vp, pl);
-    // 小信标（便于快速定位队友）
-    const c = pl.center();
-    const p = worldToScreen(vp, c.x, c.y);
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    ctx.globalAlpha = 0.6;
-    ctx.strokeStyle = pl.playerId === 2 ? "rgba(52,211,153,.95)" : "rgba(96,165,250,.95)";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 18 * vp.scale, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-  ctx.restore();
-}
+// 备注：已取消“视野受限”机制，因此不再需要对己方坦克做“雾后重绘”。
 
 function drawTank(vp, t) {
   const p = worldToScreen(vp, t.x, t.y);
@@ -1837,6 +1970,52 @@ function drawBullet(vp, b) {
   ctx.restore();
 }
 
+function drawBoss(vp, boss) {
+  if (!ctx || !boss || !boss.alive) return;
+  const p = worldToScreen(vp, boss.x, boss.y);
+  const x = Math.round(p.x);
+  const y = Math.round(p.y);
+  const w = Math.round(boss.w * vp.scale);
+  const h = Math.round(boss.h * vp.scale);
+
+  ctx.save();
+  ctx.globalCompositeOperation = "source-over";
+  // Boss本体（紫红渐变）
+  const g = ctx.createLinearGradient(x, y, x + w, y + h);
+  g.addColorStop(0, "#fb7185");
+  g.addColorStop(1, "#7c3aed");
+  ctx.fillStyle = g;
+  ctx.fillRect(x, y, w, h);
+  ctx.globalAlpha = 0.25;
+  ctx.fillStyle = "rgba(0,0,0,.7)";
+  ctx.fillRect(x, y, Math.round(w * 0.12), h);
+  ctx.fillRect(x + Math.round(w * 0.88), y, Math.round(w * 0.12), h);
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = "rgba(0,0,0,.35)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, w, h);
+
+  // 眼睛
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.fillStyle = "rgba(255,255,255,.95)";
+  ctx.beginPath();
+  ctx.arc(x + w * 0.32, y + h * 0.38, Math.max(2, 3 * vp.scale), 0, Math.PI * 2);
+  ctx.arc(x + w * 0.68, y + h * 0.38, Math.max(2, 3 * vp.scale), 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // 血条（屏幕坐标）
+  const hp = clamp(boss.hp / boss.maxHp, 0, 1);
+  const barW = w;
+  const barH = Math.max(6, Math.round(6 * vp.scale));
+  ctx.fillStyle = "rgba(0,0,0,.55)";
+  ctx.fillRect(x, y - barH - 6, barW, barH);
+  ctx.fillStyle = "rgba(251,113,133,.95)";
+  ctx.fillRect(x, y - barH - 6, Math.round(barW * hp), barH);
+  ctx.restore();
+}
+
 function drawPowerUp(vp, pu) {
   if (!ctx) return;
   const p = worldToScreen(vp, pu.x, pu.y);
@@ -1871,32 +2050,7 @@ function drawPowerUp(vp, pu) {
   ctx.restore();
 }
 
-function drawNightFog(vp) {
-  if (!ctx) return;
-  ctx.save();
-  // 先盖一层黑雾
-  ctx.globalCompositeOperation = "source-over";
-  ctx.fillStyle = "rgba(0,0,0,.58)";
-  ctx.fillRect(vp.offsetX, vp.offsetY, WORLD_W * vp.scale, WORLD_H * vp.scale);
-
-  // 再用 destination-out 挖出视野
-  ctx.globalCompositeOperation = "destination-out";
-  for (const pl of state.players) {
-    if (!pl || !pl.alive) continue;
-    const c = pl.center();
-    const p = worldToScreen(vp, c.x, c.y);
-    const r0 = 30 * vp.scale;
-    const r1 = 180 * vp.scale;
-    const g = ctx.createRadialGradient(p.x, p.y, r0, p.x, p.y, r1);
-    g.addColorStop(0, "rgba(0,0,0,1)");
-    g.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, r1, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.restore();
-}
+// 备注：已取消第3关“黑雾视野受限”。
 
 function drawOverlayHints(vp) {
   if (!state.running && !state.over) return;
@@ -1925,6 +2079,7 @@ function render() {
   // 坦克
   for (const p of state.players) if (p && p.alive) drawTank(vp, p);
   for (const e of state.enemies) if (e.alive) drawTank(vp, e);
+  if (state.boss && state.boss.alive) drawBoss(vp, state.boss);
 
   // 子弹
   for (const b of state.bullets) if (b.alive) drawBullet(vp, b);
@@ -1932,20 +2087,10 @@ function render() {
   // 道具
   for (const pu of state.powerUps) drawPowerUp(vp, pu);
 
-  // 第3关：夜战视野（玩法创新）
-  if (state.levelCfg?.night) {
-    // 先画夜雾，再把己方坦克“重新画出来”，并只在草丛中追加覆盖层实现隐藏
-    drawNightFog(vp);
-    drawFriendlyAlwaysVisible(vp);
-    drawGrassCoverForPlayers(vp);
-    // 特效放在最上层（重要反馈不被黑雾吞掉）
-    drawFX(vp);
-  } else {
-    // 草地覆盖层（能遮挡坦克/子弹，增加层次）
-    for (const g of state.grass) drawGrass(vp, g);
-    // 爆炸/火花特效（放在最上层，避免被草盖住）
-    drawFX(vp);
-  }
+  // 草地覆盖层（能遮挡坦克/子弹，增加层次；Boss关仍可用来隐蔽）
+  for (const g of state.grass) drawGrass(vp, g);
+  // 爆炸/火花特效（放在最上层，避免被草盖住）
+  drawFX(vp);
 
   drawOverlayHints(vp);
 }
@@ -1968,7 +2113,7 @@ function showMenu() {
   const h1 = panel?.querySelector("h1");
   const sub = panel?.querySelector(".sub");
   if (h1) h1.textContent = "坦克大战（三关制）";
-  if (sub) sub.textContent = "玩法创新：道具（护盾/连发/穿甲）与第3关夜战视野｜P1: WASD+空格｜P2: 方向键+回车｜P暂停";
+  if (sub) sub.textContent = "玩法创新：道具（护盾/连发/穿甲）与第3关Boss战（草丛可隐蔽）｜P1: WASD+空格｜P2: 方向键+回车｜P暂停";
   if (ui.btnStart) ui.btnStart.textContent = "开始游戏";
   startAction = "newrun";
 }
