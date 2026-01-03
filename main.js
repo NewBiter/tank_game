@@ -876,6 +876,7 @@ const state = {
   bullets: /** @type {Bullet[]} */ ([]),
   powerUps: /** @type {Array<{x:number,y:number,type:"shield"|"rapid"|"pierce",life:number}>} */ ([]),
   boss: /** @type {null|{x:number,y:number,w:number,h:number,dir:number,speed:number,cooldown:number,invuln:number,alive:boolean,hp:number,maxHp:number,ai:{turn:number,shoot:number,burst:number,spawn:number,phase:number}}} */ (null),
+  transition: /** @type {null|{kind:"nextlevel"|"menu",remaining:number,nextLevel?:number,baseTitle:string,baseSub:string}} */ (null),
   lastTime: 0,
 };
 
@@ -948,6 +949,7 @@ function showLevelIntro() {
     ? "玩法创新：Boss战 + 草丛隐蔽 + 道具（护盾/连发/穿甲）"
     : "玩法创新：击败敌人掉落道具（护盾/连发/穿甲）";
   if (ui.btnStart) ui.btnStart.textContent = "开始本关";
+  if (ui.btnStart) ui.btnStart.disabled = false;
   startAction = "nextlevel";
   // 暂停更新直到点击
   state.paused = true;
@@ -1056,7 +1058,18 @@ function gameOver(win) {
       ? `恭喜通关！P1：${state.scores[0]} 分｜P2：${state.scores[1]} 分｜总分：${total}`
       : `基地被摧毁或全员阵亡。P1：${state.scores[0]} 分｜P2：${state.scores[1]} 分｜总分：${total}`;
   }
-  if (btn) btn.textContent = "再来一局";
+
+  // 需求：失败/结束后自动回到开始界面
+  state.transition = {
+    kind: "menu",
+    remaining: 3,
+    baseTitle: h1?.textContent || (win ? "三关通关！" : "游戏结束"),
+    baseSub: sub?.textContent || "",
+  };
+  if (btn) {
+    btn.textContent = "自动返回中…";
+    btn.disabled = true;
+  }
 }
 
 // ===== AI =====
@@ -1184,6 +1197,52 @@ function pickNearestAlivePlayer(e) {
 
 // ===== 逻辑更新 =====
 function update(dt) {
+  // 过渡倒计时：无论暂停/结束都要跑
+  if (state.transition && ui.overlay) {
+    state.transition.remaining -= dt;
+    const panel = ui.overlay.querySelector(".panel");
+    const h1 = panel?.querySelector("h1");
+    const sub = panel?.querySelector(".sub");
+    const sec = Math.max(0, Math.ceil(state.transition.remaining));
+    if (h1) h1.textContent = state.transition.baseTitle;
+    if (sub) {
+      if (state.transition.kind === "nextlevel") sub.textContent = `${state.transition.baseSub}（${sec}s 后自动进入）`;
+      if (state.transition.kind === "menu") sub.textContent = `${state.transition.baseSub}（${sec}s 后返回开始）`;
+    }
+    if (state.transition.remaining <= 0) {
+      const kind = state.transition.kind;
+      const next = state.transition.nextLevel;
+      state.transition = null;
+      if (kind === "nextlevel" && typeof next === "number") {
+        loadLevel(next, { keepProgress: true });
+        if (ui.overlay) ui.overlay.classList.add("hidden");
+        if (ui.btnStart) ui.btnStart.disabled = false;
+        state.paused = false;
+        state.running = true;
+      } else if (kind === "menu") {
+        // 回到开始界面，并清空战斗状态
+        state.running = false;
+        state.paused = false;
+        state.over = false;
+        state.win = false;
+        state.pendingNextLevel = false;
+        state.enemies = [];
+        state.bullets = [];
+        state.powerUps = [];
+        state.boss = null;
+        fx.particles = [];
+        fx.rings = [];
+        if (ui.btnStart) ui.btnStart.disabled = false;
+        showMenu();
+      }
+      updateHUD();
+      // 避免同帧继续跑游戏逻辑
+      inputP1.firePressed = false;
+      inputP2.firePressed = false;
+      return;
+    }
+  }
+
   if (pausePressed) {
     pausePressed = false;
     togglePause();
@@ -1672,7 +1731,18 @@ function onLevelCleared() {
   const sub = panel?.querySelector(".sub");
   if (h1) h1.textContent = "本关完成！";
   if (sub) sub.textContent = `即将进入：${LEVELS[state.levelIndex + 1].name}（难度提升 + 新机制）`;
-  if (ui.btnStart) ui.btnStart.textContent = "进入下一关";
+  // 需求：通关后倒计时 3s 自动进入下一关
+  state.transition = {
+    kind: "nextlevel",
+    remaining: 3,
+    nextLevel: state.levelIndex + 1,
+    baseTitle: "本关完成！",
+    baseSub: sub?.textContent || `即将进入：${LEVELS[state.levelIndex + 1].name}`,
+  };
+  if (ui.btnStart) {
+    ui.btnStart.textContent = "自动进入中…";
+    ui.btnStart.disabled = true;
+  }
   startAction = "nextlevel";
 }
 
@@ -2123,6 +2193,7 @@ function showMenu() {
     ? "单人模式：P1(WASD+空格)｜玩法：三关制+道具+Boss战｜P暂停"
     : "双人模式：P1(WASD+空格) + P2(方向键+回车)｜玩法：三关制+道具+Boss战｜P暂停";
   if (ui.btnStart) ui.btnStart.textContent = "开始游戏";
+  if (ui.btnStart) ui.btnStart.disabled = false;
   startAction = "newrun";
 
   // HUD显示切换
