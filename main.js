@@ -31,6 +31,53 @@ function bossSayBaby() {
   }
 }
 
+// Boss受伤“唱歌片段”（来自 ./holdhand.mp3）
+const bossSong = {
+  url: "./holdhand.mp3",
+  // 三段裁剪：如果你有精确时间点，把 start/dur 改成你要的（单位：秒）
+  // 默认会在首次播放后按歌曲总时长自动生成 3 段（避免你不填也能用）
+  segments: /** @type {Array<{start:number,dur:number}>} */ ([]),
+  idx: 0,
+  cdUntil: 0,
+  inited: false,
+};
+
+function initBossSongSegments(durationSec) {
+  if (bossSong.segments.length) return;
+  const d = Math.max(1, durationSec || 60);
+  // 取大概 20% / 48% / 72% 三段，每段 3.2s（会自动 clamp）
+  bossSong.segments = [
+    { start: 64.0, dur: 5.0 },
+    { start: 51.0, dur: 5.0 },
+    { start: 0.0, dur: 5.0 },
+  ];
+}
+
+function bossSingOnHurt() {
+  // 冷却：至少间隔 0.9s
+  const now = performance.now() / 1000;
+  if (now < bossSong.cdUntil) return;
+  bossSong.cdUntil = now + 0.9;
+
+  // 预加载（异步），并播放一段；若加载失败就 fallback baby
+  try {
+    audio.preloadSong(bossSong.url).then((buf) => {
+      if (!bossSong.inited) {
+        bossSong.inited = true;
+        initBossSongSegments(buf.duration);
+      }
+      if (!bossSong.segments.length) return;
+      const seg = bossSong.segments[bossSong.idx % bossSong.segments.length];
+      bossSong.idx += 1;
+      audio.playSongSegment(bossSong.url, seg.start, seg.dur, 0.85);
+    }).catch(() => {
+      bossSayBaby();
+    });
+  } catch {
+    bossSayBaby();
+  }
+}
+
 // ===== 资源：Boss图片 =====
 const bossImg = new Image();
 bossImg.src = "./Untitled.jpeg";
@@ -291,6 +338,49 @@ function createAudio() {
     syncUI();
   }
 
+  // ===== 外部音频（mp3）加载/播放：用于 Boss 受伤“唱歌片段” =====
+  const songCache = new Map(); // url -> Promise<AudioBuffer> | AudioBuffer
+  function preloadSong(url) {
+    if (!ensure() || !ac) return Promise.reject(new Error("AudioContext not available"));
+    const hit = songCache.get(url);
+    if (hit && !(hit instanceof Promise)) return Promise.resolve(hit);
+    if (hit && hit instanceof Promise) return hit;
+    const p = fetch(url)
+      .then(r => {
+        if (!r.ok) throw new Error(`fetch failed: ${r.status}`);
+        return r.arrayBuffer();
+      })
+      .then(ab => ac.decodeAudioData(ab));
+    songCache.set(url, p);
+    p.then(buf => songCache.set(url, buf)).catch(() => songCache.delete(url));
+    return p;
+  }
+
+  function playSongSegment(url, startSec, durSec, gain = 0.8) {
+    if (!ensure() || !ac || !sfxBus) return;
+    if (muted || ac.state === "suspended") return;
+    const cached = songCache.get(url);
+    const playWith = (buf) => {
+      const t0 = ac.currentTime;
+      const src = ac.createBufferSource();
+      src.buffer = buf;
+      const g = ac.createGain();
+      // 淡入淡出避免咔哒
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.linearRampToValueAtTime(gain, t0 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + durSec);
+      src.connect(g).connect(sfxBus);
+      const safeStart = clamp(startSec, 0, Math.max(0, buf.duration - 0.05));
+      const safeDur = clamp(durSec, 0.15, Math.max(0.15, buf.duration - safeStart));
+      src.start(t0, safeStart, safeDur);
+    };
+    if (cached && !(cached instanceof Promise)) {
+      playWith(cached);
+    } else {
+      preloadSong(url).then(playWith).catch(() => {});
+    }
+  }
+
   // 命中：更像“砰/金属火花”
   function hit(owner) {
     if (!ensure() || !ac || ac.state === "suspended" || muted) return;
@@ -320,7 +410,7 @@ function createAudio() {
     noiseBurst({ t0: t0 + 0.01, dur: 0.18, peak: 0.22, hp: 60, bp: 420 });
   }
 
-  return { unlock, startMusic, stopMusic, toggleMute, hit, boom };
+  return { unlock, startMusic, stopMusic, toggleMute, hit, boom, preloadSong, playSongSegment };
 }
 
 const audio = createAudio();
@@ -973,13 +1063,13 @@ function setRole(isAdmin) {
   if (ui.invincible) ui.invincible.disabled = !authed;
 }
 
-function startNewRun(startLevelIndex = 0) {
+function startNewRun(startLevelIndex = 0, opts = {}) {
   state.scores = [0, 0];
   state.lives = [3, 3];
-  loadLevel(startLevelIndex, { keepProgress: true });
+  loadLevel(startLevelIndex, { keepProgress: true, bossOnly: !!opts.bossOnly });
 }
 
-function loadLevel(levelIndex, { keepProgress }) {
+function loadLevel(levelIndex, { keepProgress, bossOnly } = {}) {
   state.levelIndex = clamp(levelIndex, 0, LEVELS.length - 1);
   state.levelCfg = LEVELS[state.levelIndex];
   state.time = 0;
@@ -992,7 +1082,8 @@ function loadLevel(levelIndex, { keepProgress }) {
   // 需求：每一关开始时，刷新玩家 3 条命（分数仍保留）
   state.lives = state.mode === 1 ? [3, 0] : [3, 3];
 
-  state.waveLeft = state.levelCfg.waveTotal;
+  const bossOnlyStart = !!(bossOnly && state.levelCfg?.hasBoss);
+  state.waveLeft = bossOnlyStart ? 0 : state.levelCfg.waveTotal;
   state.enemiesAlive = 0;
   state.enemySpawnTimer = 0.2;
   state.tiles = buildTiles(state.levelCfg.layout);
@@ -1019,7 +1110,15 @@ function loadLevel(levelIndex, { keepProgress }) {
   }
 
   updateHUD();
-  showLevelIntro();
+  if (bossOnlyStart) {
+    // 直达 Boss：跳过开场暂停，直接生成 Boss 并开始战斗
+    state.running = true;
+    state.paused = false;
+    if (ui.overlay) ui.overlay.classList.add("hidden");
+    spawnBoss({ pauseAndOverlay: false });
+  } else {
+    showLevelIntro();
+  }
 }
 
 function showLevelIntro() {
@@ -1472,7 +1571,8 @@ function update(dt) {
           b.alive = false;
           state.boss.hp -= 1;
           state.boss.invuln = 0.08;
-          bossSayBaby();
+          // Boss受伤：播放歌曲片段（若失败则退回喊“baby”）
+          bossSingOnHurt();
           const cc = { x: state.boss.x + state.boss.w / 2, y: state.boss.y + state.boss.h / 2 };
           spawnImpact(cc.x, cc.y, b.owner, 1.2);
           if (state.boss.hp <= 0) killBoss(b.owner);
@@ -1504,7 +1604,10 @@ function update(dt) {
   if (state.waveLeft <= 0 && state.enemiesAlive <= 0 && !state.over) {
     if (state.levelCfg?.hasBoss) {
       if (!state.boss) spawnBoss();
-      else if (!state.boss.alive) onLevelCleared();
+      else if (!state.boss.alive) {
+        // Boss阶段：以击败Boss为最终胜利
+        gameOver(true);
+      }
     } else {
       onLevelCleared();
     }
@@ -1644,12 +1747,16 @@ function killEnemy(e, owner) {
   }
 }
 
-function spawnBoss() {
+function spawnBoss(opts = {}) {
   // Boss出现：放在上方中间偏上
   const w = 46, h = 46;
   const desiredX = WORLD_W / 2 - w / 2;
   const desiredY = TILE * 2;
   const pos = findFreeTankPos(desiredX, desiredY, w, h, null);
+
+  // Boss阶段：取消所有环境（墙/水/草/基地），并清空残余小怪
+  enterBossArena();
+
   state.boss = {
     x: pos.x, y: pos.y, w, h,
     dir: DIR.DOWN,
@@ -1661,8 +1768,9 @@ function spawnBoss() {
     maxHp: 18,
     ai: { turn: rand(0.6, 1.4), shoot: rand(0.35, 0.9), burst: rand(1.2, 2.2), spawn: rand(2.4, 4.2), phase: 0 },
   };
-  // 提示：Boss登场
-  if (ui.overlay) {
+  // 提示：Boss登场（默认会弹窗暂停；管理员“直达Boss”时可关闭）
+  const pauseAndOverlay = (opts.pauseAndOverlay !== false);
+  if (pauseAndOverlay && ui.overlay) {
     ui.overlay.classList.remove("hidden");
     const panel = ui.overlay.querySelector(".panel");
     const h1 = panel?.querySelector("h1");
@@ -1674,6 +1782,16 @@ function spawnBoss() {
     state.paused = true;
   }
   updateHUD();
+}
+
+function enterBossArena() {
+  // 清空环境与单位：只保留玩家与Boss战
+  state.tiles = [];
+  splitTiles(); // grass/solids 都会变空
+  state.enemies = [];
+  state.enemiesAlive = 0;
+  state.waveLeft = 0;
+  state.powerUps = [];
 }
 
 function killBoss(owner) {
@@ -2216,11 +2334,16 @@ function drawBoss(vp, boss) {
   // 血条（屏幕坐标）
   const hp = clamp(boss.hp / boss.maxHp, 0, 1);
   const barW = w;
-  const barH = Math.max(6, Math.round(6 * vp.scale));
-  ctx.fillStyle = "rgba(0,0,0,.55)";
-  ctx.fillRect(x, y - barH - 6, barW, barH);
+  // 加厚血条
+  const barH = Math.max(12, Math.round(12 * vp.scale));
+  const by = y - barH - 8;
+  ctx.fillStyle = "rgba(0,0,0,.65)";
+  ctx.fillRect(x, by, barW, barH);
   ctx.fillStyle = "rgba(251,113,133,.95)";
-  ctx.fillRect(x, y - barH - 6, Math.round(barW * hp), barH);
+  ctx.fillRect(x, by, Math.round(barW * hp), barH);
+  ctx.strokeStyle = "rgba(255,255,255,.18)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, by, barW, barH);
   ctx.restore();
 }
 
@@ -2354,12 +2477,15 @@ function startGame() {
     // 管理员：输入 vae 后可选任意关
     let startLevel = 0;
     const authed = state.admin && (state.adminAuthed || isAdminAuthed());
+    let bossOnly = false;
     if (authed) {
-      const lv = Number(ui.levelSelect?.value || "1");
+      const raw = String(ui.levelSelect?.value || "1");
+      bossOnly = raw === "3b";
+      const lv = Number(raw.replace("b", "") || "1");
       startLevel = clamp(lv - 1, 0, LEVELS.length - 1);
     }
     state.invincible = !!ui.invincible?.checked && authed;
-    startNewRun(startLevel);
+    startNewRun(startLevel, { bossOnly });
     if (ui.overlay) ui.overlay.classList.add("hidden");
     state.paused = false;
   } else {
@@ -2381,6 +2507,8 @@ function startGame() {
 ui.btnStart?.addEventListener("click", () => {
   audio.unlock();
   audio.startMusic();
+  // 预解码 Boss 歌曲（避免Boss受伤时第一次播放卡顿）
+  audio.preloadSong("./holdhand.mp3").catch(() => {});
   startGame();
 });
 ui.btnPause?.addEventListener("click", () => {
@@ -2412,6 +2540,10 @@ ui.levelPass?.addEventListener("input", () => {
   if (!state.admin) return;
   state.adminAuthed = isAdminAuthed();
   setRole(true);
+});
+
+ui.levelSelect?.addEventListener("change", () => {
+  if (state.admin) setRole(true);
 });
 
 ui.btnMode1?.addEventListener("click", () => {
