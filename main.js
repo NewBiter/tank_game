@@ -1482,9 +1482,9 @@ function updateBoss(dt) {
     b.ai.turn = rand(0.6, 1.5);
   }
 
-  // 移动（复用碰撞：临时构造成 tank-like）
+  // 移动：Boss 具有“穿墙”能力（不受砖/钢/水阻挡），仅受边界限制
   const v = DIR_V[b.dir];
-  const moved = tryMoveTank(b, v.x * b.speed * dt, v.y * b.speed * dt);
+  const moved = tryMoveBoss(b, v.x * b.speed * dt, v.y * b.speed * dt);
   if (!moved) {
     b.dir = irand(0, 3);
     b.ai.turn = rand(0.3, 0.9);
@@ -1511,6 +1511,20 @@ function updateBoss(dt) {
     spawnEnemy();
     b.ai.spawn = rand(2.6, 4.8);
   }
+}
+
+function tryMoveBoss(boss, dx, dy) {
+  const next = { x: boss.x + dx, y: boss.y + dy, w: boss.w, h: boss.h };
+  // 世界边界
+  if (next.x < 0 || next.y < 0 || next.x + next.w > WORLD_W || next.y + next.h > WORLD_H) return false;
+  // 不与玩家重叠（但允许穿墙）
+  for (const p of state.players) {
+    if (!p || !p.alive) continue;
+    if (rectsOverlap(next, p.rect())) return false;
+  }
+  boss.x = next.x;
+  boss.y = next.y;
+  return true;
 }
 
 function fireFromBoss(boss, dir) {
