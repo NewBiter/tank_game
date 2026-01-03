@@ -302,11 +302,11 @@ function resetGame() {
   state.bullets = [];
   state.enemies = [];
 
-  // 玩家出生点（底部中间偏左）
-  state.player = new Tank({ x: WORLD_W / 2 - 14, y: WORLD_H - 2 * TILE - 14, dir: DIR.UP, isPlayer: true });
-  // 防止出生直接压在基地上
-  state.player.x = clamp(state.player.x, 8, WORLD_W - state.player.w - 8);
-  state.player.y = clamp(state.player.y, 8, WORLD_H - state.player.h - 8);
+  // 玩家出生点：先给一个“期望位置”，再在附近找一个真正可通行的空位
+  const desiredX = WORLD_W / 2 - 14;
+  const desiredY = WORLD_H - 2 * TILE - 14;
+  const spawn = findFreeTankPos(desiredX, desiredY, 28, 28);
+  state.player = new Tank({ x: spawn.x, y: spawn.y, dir: DIR.UP, isPlayer: true });
 
   updateHUD();
 }
@@ -603,11 +603,68 @@ function killPlayer() {
     return;
   }
   // 重生
-  state.player.x = WORLD_W / 2 - 14;
-  state.player.y = WORLD_H - 2 * TILE - 14;
+  const spawn = findFreeTankPos(WORLD_W / 2 - 14, WORLD_H - 2 * TILE - 14, state.player.w, state.player.h);
+  state.player.x = spawn.x;
+  state.player.y = spawn.y;
   state.player.dir = DIR.UP;
   state.player.invuln = 1.4;
   state.player.cooldown = 0.2;
+}
+
+function isRectFree(box) {
+  // 世界边界
+  if (box.x < 0 || box.y < 0 || box.x + box.w > WORLD_W || box.y + box.h > WORLD_H) return false;
+  // 方块阻挡
+  for (const tile of state.solids) {
+    if (rectsOverlap(box, tile.rect())) return false;
+  }
+  // 敌人阻挡（避免出生压坦克）
+  for (const e of state.enemies) {
+    if (!e.alive) continue;
+    if (rectsOverlap(box, e.rect())) return false;
+  }
+  // 玩家自己（在reset时尚未创建；在重生时允许覆盖旧位置检查）
+  if (state.player && state.player.alive) {
+    if (rectsOverlap(box, state.player.rect())) return false;
+  }
+  return true;
+}
+
+function findFreeTankPos(x, y, w, h) {
+  // 以(x,y)为中心，螺旋扩散寻找空位（步长=8像素，足够细）
+  const start = {
+    x: clamp(x, 0, WORLD_W - w),
+    y: clamp(y, 0, WORLD_H - h),
+    w, h,
+  };
+  if (isRectFree(start)) return { x: start.x, y: start.y };
+
+  const step = 8;
+  const maxR = Math.ceil(Math.max(WORLD_W, WORLD_H) / step);
+  for (let r = 1; r <= maxR; r++) {
+    const d = r * step;
+    // 扫描“方环”边界点，避免点太多
+    const candidates = [
+      { x: start.x + d, y: start.y },
+      { x: start.x - d, y: start.y },
+      { x: start.x, y: start.y + d },
+      { x: start.x, y: start.y - d },
+      { x: start.x + d, y: start.y + d },
+      { x: start.x + d, y: start.y - d },
+      { x: start.x - d, y: start.y + d },
+      { x: start.x - d, y: start.y - d },
+    ];
+    for (const c of candidates) {
+      const box = {
+        x: clamp(c.x, 0, WORLD_W - w),
+        y: clamp(c.y, 0, WORLD_H - h),
+        w, h,
+      };
+      if (isRectFree(box)) return { x: box.x, y: box.y };
+    }
+  }
+  // 极端兜底：左下角
+  return { x: 8, y: WORLD_H - h - 8 };
 }
 
 function togglePause() {
