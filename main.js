@@ -798,27 +798,100 @@ window.addEventListener("keyup", (e) => onKey(e, false));
 function setupTouchControls() {
   const root = $("#touch");
   if (!root) return;
-  const press = (key, down) => {
-    if (!key || key === "none") return;
-    if (key === "fire") {
-      if (down && !inputP1.fire) inputP1.firePressed = true;
-      inputP1.fire = down;
+
+  // 开火按钮
+  const fireBtn = root.querySelector('[data-touch="fire"]');
+  if (fireBtn) {
+    const down = (e) => {
+      e.preventDefault();
+      if (!inputP1.fire) inputP1.firePressed = true;
+      inputP1.fire = true;
+    };
+    const up = (e) => {
+      e.preventDefault();
+      inputP1.fire = false;
+    };
+    fireBtn.addEventListener("pointerdown", down);
+    fireBtn.addEventListener("pointerup", up);
+    fireBtn.addEventListener("pointercancel", up);
+    fireBtn.addEventListener("pointerleave", up);
+  }
+
+  // 摇杆（转盘） -> 单方向（上下左右）控制，更适合坦克移动
+  const joy = root.querySelector("#joy");
+  const knob = joy?.querySelector(".joy-knob");
+  if (!joy || !knob) return;
+
+  let active = false;
+  let pid = null;
+  let centerX = 0, centerY = 0;
+  let curDir = null; // "up"|"down"|"left"|"right"|null
+
+  const setDir = (next) => {
+    if (curDir === next) return;
+    // clear previous
+    if (curDir) markDirUp(inputP1, curDir);
+    curDir = next;
+    if (curDir) markDirDown(inputP1, moveP1, curDir);
+  };
+
+  const reset = () => {
+    active = false;
+    pid = null;
+    setDir(null);
+    knob.style.transform = "translate3d(0,0,0)";
+  };
+
+  const updateFromPoint = (clientX, clientY) => {
+    const dx = clientX - centerX;
+    const dy = clientY - centerY;
+    const maxR = Math.min(56, joy.clientWidth * 0.35);
+    const dist = Math.hypot(dx, dy);
+    const dead = Math.max(10, maxR * 0.22);
+
+    // knob move
+    const kx = dist > 0 ? (dx / dist) * Math.min(dist, maxR) : 0;
+    const ky = dist > 0 ? (dy / dist) * Math.min(dist, maxR) : 0;
+    knob.style.transform = `translate3d(${kx}px, ${ky}px, 0)`;
+
+    if (dist < dead) {
+      setDir(null);
       return;
     }
-    if (!(key in inputP1)) return;
-    if (down) markDirDown(inputP1, moveP1, key);
-    else markDirUp(inputP1, key);
+
+    // 选择主轴方向（只输出一个方向，防止斜向误操作）
+    if (Math.abs(dx) > Math.abs(dy)) setDir(dx > 0 ? "right" : "left");
+    else setDir(dy > 0 ? "down" : "up");
   };
-  const bindBtn = (btn) => {
-    const key = btn.dataset.touch;
-    const down = (e) => { e.preventDefault(); press(key, true); };
-    const up = (e) => { e.preventDefault(); press(key, false); };
-    btn.addEventListener("pointerdown", down);
-    btn.addEventListener("pointerup", up);
-    btn.addEventListener("pointercancel", up);
-    btn.addEventListener("pointerleave", up);
-  };
-  root.querySelectorAll("[data-touch]").forEach(bindBtn);
+
+  joy.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    joy.setPointerCapture(e.pointerId);
+    active = true;
+    pid = e.pointerId;
+    const r = joy.getBoundingClientRect();
+    centerX = r.left + r.width / 2;
+    centerY = r.top + r.height / 2;
+    updateFromPoint(e.clientX, e.clientY);
+  });
+
+  joy.addEventListener("pointermove", (e) => {
+    if (!active || pid !== e.pointerId) return;
+    e.preventDefault();
+    updateFromPoint(e.clientX, e.clientY);
+  });
+
+  joy.addEventListener("pointerup", (e) => {
+    if (pid !== e.pointerId) return;
+    e.preventDefault();
+    reset();
+  });
+  joy.addEventListener("pointercancel", reset);
+  joy.addEventListener("pointerleave", (e) => {
+    if (!active) return;
+    // 离开也复位，避免卡住
+    reset();
+  });
 }
 
 setupTouchControls();

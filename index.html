@@ -91,14 +91,9 @@
 
       <!-- 移动端虚拟按键（桌面也可用） -->
       <div id="touch" class="touch">
-        <div class="dpad">
-          <button class="tbtn" data-touch="up" aria-label="上">▲</button>
-          <div class="dpad-mid">
-            <button class="tbtn" data-touch="left" aria-label="左">◀</button>
-            <button class="tbtn tbtn-center" data-touch="none" aria-label="中">●</button>
-            <button class="tbtn" data-touch="right" aria-label="右">▶</button>
-          </div>
-          <button class="tbtn" data-touch="down" aria-label="下">▼</button>
+        <div id="joy" class="joystick" aria-label="移动摇杆">
+          <div class="joy-base"></div>
+          <div class="joy-knob"></div>
         </div>
         <div class="actions">
           <button class="tbtn fire" data-touch="fire" aria-label="开火">开火</button>

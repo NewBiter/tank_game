@@ -167,7 +167,8 @@ body{
 
 .touch{
   position:absolute;
-  left:18px; right:18px; bottom:18px;
+  left:14px; right:14px;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   display:flex;
   justify-content:space-between;
   align-items:flex-end;
@@ -178,33 +179,20 @@ body{
   touch-action: manipulation;
 }
 
-.dpad{
-  width:190px;
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  gap:10px;
-  padding:12px;
-  border-radius:18px;
-  background: rgba(17,24,39,.55);
-  border:1px solid rgba(255,255,255,.10);
-  backdrop-filter: blur(10px);
-}
-.dpad-mid{display:flex; gap:10px; align-items:center}
 .actions{
-  padding:12px;
+  padding:10px;
   border-radius:18px;
-  background: rgba(17,24,39,.55);
-  border:1px solid rgba(255,255,255,.10);
+  background: rgba(17,24,39,.40);
+  border:1px solid rgba(255,255,255,.08);
   backdrop-filter: blur(10px);
 }
 
 .tbtn{
-  width:58px;
-  height:58px;
-  border-radius:18px;
-  border:1px solid rgba(255,255,255,.10);
-  background: rgba(255,255,255,.05);
+  width:52px;
+  height:52px;
+  border-radius:16px;
+  border:1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.04);
   color:var(--text);
   font-weight:800;
   cursor:pointer;
@@ -216,25 +204,64 @@ body{
   opacity:.75;
 }
 .tbtn.fire{
-  width:140px;
-  height:140px;
+  width:96px;
+  height:96px;
+  border-radius:22px;
+  font-size:16px;
+  background: linear-gradient(180deg, rgba(52,211,153,.22), rgba(52,211,153,.08));
+  border-color: rgba(52,211,153,.28);
+}
+
+/* 摇杆（转盘） */
+.joystick{
+  width:160px;
+  height:160px;
   border-radius:28px;
-  font-size:18px;
-  background: linear-gradient(180deg, rgba(52,211,153,.25), rgba(52,211,153,.10));
-  border-color: rgba(52,211,153,.35);
+  position:relative;
+  background: rgba(17,24,39,.40);
+  border:1px solid rgba(255,255,255,.08);
+  backdrop-filter: blur(10px);
+  touch-action: none;
+}
+.joy-base{
+  position:absolute;
+  inset:18px;
+  border-radius:999px;
+  background: rgba(255,255,255,.04);
+  border:1px solid rgba(255,255,255,.08);
+}
+.joy-knob{
+  position:absolute;
+  left:50%;
+  top:50%;
+  width:64px;
+  height:64px;
+  margin-left:-32px;
+  margin-top:-32px;
+  border-radius:999px;
+  background: rgba(255,255,255,.06);
+  border:1px solid rgba(255,255,255,.10);
+  box-shadow: 0 12px 32px rgba(0,0,0,.35);
+  transform: translate3d(0,0,0);
+  transition: transform 90ms ease-out;
 }
 
 @media (max-height: 680px){
-  .touch{bottom:10px; left:10px; right:10px}
-  .tbtn{width:52px; height:52px; border-radius:16px}
-  .tbtn.fire{width:120px; height:120px; border-radius:26px}
-  .dpad{width:170px}
+  .touch{left:10px; right:10px; bottom: calc(8px + env(safe-area-inset-bottom, 0px))}
+  .joystick{width:140px; height:140px; border-radius:24px}
+  .joy-knob{width:58px; height:58px; margin-left:-29px; margin-top:-29px}
+  .tbtn.fire{width:86px; height:86px; border-radius:20px}
 }
 
 @media (pointer:fine){
   /* 桌面端降低虚拟按键存在感 */
-  .touch{opacity:.45}
+  .touch{opacity:.30}
   .touch:hover{opacity:.9}
+}
+
+@media (pointer:coarse){
+  /* 手机端更半透明，避免遮挡 */
+  .touch{opacity:.55}
 }
 
 
