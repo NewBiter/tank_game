@@ -3,17 +3,55 @@
 
 const $ = (sel) => document.querySelector(sel);
 const canvas = /** @type {HTMLCanvasElement} */ ($("#game"));
-const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext("2d", { alpha: true }));
+const ctx = /** @type {CanvasRenderingContext2D|null} */ (canvas?.getContext("2d", { alpha: true }) ?? null);
+
+function setText(el, text) {
+  if (!el) return;
+  el.textContent = String(text);
+}
+
+function showFatalError(err) {
+  try {
+    const msg = (err && (err.stack || err.message)) ? String(err.stack || err.message) : String(err);
+    // 尽量把错误展示到覆盖层，避免“异常结束像黑屏”
+    if (ui?.overlay) {
+      ui.overlay.classList.remove("hidden");
+      const panel = ui.overlay.querySelector(".panel");
+      if (panel) {
+        const h1 = panel.querySelector("h1");
+        const sub = panel.querySelector(".sub");
+        if (h1) h1.textContent = "发生错误（已停止）";
+        if (sub) sub.textContent = msg.slice(0, 260);
+      }
+    } else {
+      // 兜底
+      // eslint-disable-next-line no-alert
+      alert(msg);
+    }
+  } catch {
+    // ignore
+  }
+}
 
 const ui = {
   overlay: $("#overlay"),
   btnStart: $("#btn-start"),
   btnPause: $("#btn-pause"),
   btnRestart: $("#btn-restart"),
-  score: $("#score"),
-  lives: $("#lives"),
+  // 兼容旧HUD（#score/#lives）与新HUD（#score1/#lives1/#score2/#lives2）
+  score1: $("#score1") || $("#score"),
+  lives1: $("#lives1") || $("#lives"),
+  score2: $("#score2"),
+  lives2: $("#lives2"),
   enemies: $("#enemies"),
 };
+
+window.addEventListener("error", (e) => {
+  showFatalError(e?.error || e?.message || e);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  showFatalError(e?.reason || e);
+});
 
 // ===== 世界与渲染 =====
 const TILE = 32;
@@ -45,6 +83,7 @@ function lineIntersectsRect(x1, y1, x2, y2, r) {
 }
 
 function resizeCanvas() {
+  if (!ctx) return;
   const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
   const cssW = canvas.clientWidth;
   const cssH = canvas.clientHeight;
@@ -71,56 +110,103 @@ function worldToScreen(vp, x, y) {
 }
 
 // ===== 输入（键盘+触摸）=====
-const input = {
-  up: false, down: false, left: false, right: false,
-  fire: false,
-  firePressed: false, // edge
-  pausePressed: false,
-};
+function createInput() {
+  return {
+    up: false, down: false, left: false, right: false,
+    fire: false,
+    firePressed: false, // edge
+  };
+}
 
-// 让“最后按下的方向键”优先生效（更符合直觉）
-let moveSeq = 0;
-const moveOrder = { up: 0, right: 0, down: 0, left: 0 };
-const moveKeyToDir = { up: 0, right: 1, down: 2, left: 3 };
+function createMoveTracker() {
+  return {
+    seq: 0,
+    order: { up: 0, right: 0, down: 0, left: 0 },
+  };
+}
 
-function recomputeMoveDir() {
+function markDirDown(inputObj, tracker, key) {
+  if (!(key in inputObj)) return;
+  if (!inputObj[key]) {
+    tracker.seq += 1;
+    tracker.order[key] = tracker.seq;
+  }
+  inputObj[key] = true;
+}
+
+function markDirUp(inputObj, key) {
+  if (!(key in inputObj)) return;
+  inputObj[key] = false;
+}
+
+function recomputeMoveDir(inputObj, tracker) {
+  const moveKeyToDir = { up: 0, right: 1, down: 2, left: 3 };
   let bestKey = null;
   let bestSeq = -1;
   for (const k of ["up", "right", "down", "left"]) {
-    if (input[k] && moveOrder[k] > bestSeq) {
-      bestSeq = moveOrder[k];
+    if (inputObj[k] && tracker.order[k] > bestSeq) {
+      bestSeq = tracker.order[k];
       bestKey = k;
     }
   }
   return bestKey ? moveKeyToDir[bestKey] : null;
 }
 
-const keyMap = new Map([
-  ["KeyW", "up"], ["ArrowUp", "up"],
-  ["KeyS", "down"], ["ArrowDown", "down"],
-  ["KeyA", "left"], ["ArrowLeft", "left"],
-  ["KeyD", "right"], ["ArrowRight", "right"],
-  ["Space", "fire"], ["Enter", "fire"],
+const inputP1 = createInput();
+const inputP2 = createInput();
+const moveP1 = createMoveTracker();
+const moveP2 = createMoveTracker();
+let pausePressed = false;
+
+// P1: WASD + Space
+const keyMapP1 = new Map([
+  ["KeyW", "up"],
+  ["KeyS", "down"],
+  ["KeyA", "left"],
+  ["KeyD", "right"],
+]);
+// P2: Arrow + Enter
+const keyMapP2 = new Map([
+  ["ArrowUp", "up"],
+  ["ArrowDown", "down"],
+  ["ArrowLeft", "left"],
+  ["ArrowRight", "right"],
 ]);
 
 function onKey(e, isDown) {
-  const k = keyMap.get(e.code);
-  if (k) {
-    e.preventDefault();
-    if (k === "fire") {
-      if (isDown && !input.fire) input.firePressed = true;
-      input.fire = isDown;
-    } else {
-      if (isDown && !input[k]) {
-        moveSeq += 1;
-        moveOrder[k] = moveSeq;
-      }
-      input[k] = isDown;
-    }
-  }
   if (e.code === "KeyP" && isDown) {
     e.preventDefault();
-    input.pausePressed = true;
+    pausePressed = true;
+    return;
+  }
+
+  const k1 = keyMapP1.get(e.code);
+  const k2 = keyMapP2.get(e.code);
+
+  if (k1) {
+    e.preventDefault();
+    if (isDown) markDirDown(inputP1, moveP1, k1);
+    else markDirUp(inputP1, k1);
+    return;
+  }
+  if (k2) {
+    e.preventDefault();
+    if (isDown) markDirDown(inputP2, moveP2, k2);
+    else markDirUp(inputP2, k2);
+    return;
+  }
+
+  if (e.code === "Space") {
+    e.preventDefault();
+    if (isDown && !inputP1.fire) inputP1.firePressed = true;
+    inputP1.fire = isDown;
+    return;
+  }
+  if (e.code === "Enter") {
+    e.preventDefault();
+    if (isDown && !inputP2.fire) inputP2.firePressed = true;
+    inputP2.fire = isDown;
+    return;
   }
 }
 
@@ -133,16 +219,13 @@ function setupTouchControls() {
   const press = (key, down) => {
     if (!key || key === "none") return;
     if (key === "fire") {
-      if (down && !input.fire) input.firePressed = true;
-      input.fire = down;
+      if (down && !inputP1.fire) inputP1.firePressed = true;
+      inputP1.fire = down;
       return;
     }
-    if (!(key in input)) return;
-    if (down && !input[key]) {
-      moveSeq += 1;
-      moveOrder[key] = moveSeq;
-    }
-    input[key] = down;
+    if (!(key in inputP1)) return;
+    if (down) markDirDown(inputP1, moveP1, key);
+    else markDirUp(inputP1, key);
   };
   const bindBtn = (btn) => {
     const key = btn.dataset.touch;
@@ -167,17 +250,17 @@ const DIR_V = [
   { x: -1, y: 0 },
 ];
 
-function dirFromInput() {
-  // 取“最后按下的方向”
-  return recomputeMoveDir();
+function dirFromInput(inputObj, tracker) {
+  return recomputeMoveDir(inputObj, tracker);
 }
 
 class Tank {
-  constructor({ x, y, dir, isPlayer }) {
+  constructor({ x, y, dir, isPlayer, playerId }) {
     this.x = x; this.y = y;
     this.w = 28; this.h = 28;
     this.dir = dir ?? DIR.UP;
     this.isPlayer = !!isPlayer;
+    this.playerId = playerId ?? null; // 1 | 2 | null
     this.speed = this.isPlayer ? 120 : 88;
     this.cooldown = 0;
     this.alive = true;
@@ -195,7 +278,7 @@ class Bullet {
   constructor({ x, y, dir, owner }) {
     this.x = x; this.y = y;
     this.dir = dir;
-    this.owner = owner; // "player" | "enemy"
+    this.owner = owner; // "p1" | "p2" | "enemy"
     this.r = 4;
     this.speed = 260;
     this.alive = true;
@@ -267,15 +350,15 @@ const state = {
   paused: false,
   over: false,
   win: false,
-  score: 0,
-  lives: 3,
+  scores: [0, 0], // [p1, p2]
+  lives: [3, 3],  // [p1, p2]
   waveLeft: 10, // 总敌人数量
   enemiesAlive: 0,
   enemySpawnTimer: 0,
   tiles: buildTiles(),
   grass: [], // 覆盖层
   solids: [],
-  player: null,
+  players: /** @type {Tank[]} */ ([]),
   enemies: /** @type {Tank[]} */ ([]),
   bullets: /** @type {Bullet[]} */ ([]),
   lastTime: 0,
@@ -292,8 +375,8 @@ function resetGame() {
   state.paused = false;
   state.over = false;
   state.win = false;
-  state.score = 0;
-  state.lives = 3;
+  state.scores = [0, 0];
+  state.lives = [3, 3];
   state.waveLeft = 12;
   state.enemiesAlive = 0;
   state.enemySpawnTimer = 0.2;
@@ -302,20 +385,25 @@ function resetGame() {
   state.bullets = [];
   state.enemies = [];
 
-  // 玩家出生点：先给一个“期望位置”，再在附近找一个真正可通行的空位
-  const desiredX = WORLD_W / 2 - 14;
-  const desiredY = WORLD_H - 2 * TILE - 14;
-  const spawn = findFreeTankPos(desiredX, desiredY, 28, 28);
-  state.player = new Tank({ x: spawn.x, y: spawn.y, dir: DIR.UP, isPlayer: true });
+  // 双人出生：左下 + 右下
+  const y0 = WORLD_H - 2 * TILE - 14;
+  const p1Spawn = findFreeTankPos(TILE * 2, y0, 28, 28);
+  const p2Spawn = findFreeTankPos(WORLD_W - TILE * 3, y0, 28, 28);
+  state.players = [
+    new Tank({ x: p1Spawn.x, y: p1Spawn.y, dir: DIR.UP, isPlayer: true, playerId: 1 }),
+    new Tank({ x: p2Spawn.x, y: p2Spawn.y, dir: DIR.UP, isPlayer: true, playerId: 2 }),
+  ];
 
   updateHUD();
 }
 
 function updateHUD() {
-  ui.score.textContent = String(state.score);
-  ui.lives.textContent = String(state.lives);
-  ui.enemies.textContent = String(state.waveLeft + state.enemiesAlive);
-  ui.btnPause.textContent = state.paused ? "继续" : "暂停";
+  setText(ui.score1, state.scores[0]);
+  setText(ui.lives1, state.lives[0]);
+  setText(ui.score2, state.scores[1]);
+  setText(ui.lives2, state.lives[1]);
+  setText(ui.enemies, state.waveLeft + state.enemiesAlive);
+  setText(ui.btnPause, state.paused ? "继续" : "暂停");
 }
 
 // ===== 碰撞与移动 =====
@@ -329,8 +417,9 @@ function tryMoveTank(tank, dx, dy) {
     if (rectsOverlap(next, tile.rect())) return false;
   }
   // 与坦克（避免重叠）
-  if (state.player && tank !== state.player && state.player.alive) {
-    if (rectsOverlap(next, state.player.rect())) return false;
+  for (const p of state.players) {
+    if (!p || !p.alive || p === tank) continue;
+    if (rectsOverlap(next, p.rect())) return false;
   }
   for (const e of state.enemies) {
     if (!e.alive || e === tank) continue;
@@ -352,7 +441,7 @@ function fireFromTank(tank) {
     x: ox,
     y: oy,
     dir: tank.dir,
-    owner: tank.isPlayer ? "player" : "enemy",
+    owner: tank.isPlayer ? (tank.playerId === 2 ? "p2" : "p1") : "enemy",
   }));
   tank.cooldown = tank.isPlayer ? 0.24 : 0.55;
 }
@@ -372,17 +461,20 @@ function gameOver(win) {
   state.running = false;
   state.paused = false;
   state.win = !!win;
-  ui.overlay.classList.remove("hidden");
+  if (ui.overlay) ui.overlay.classList.remove("hidden");
 
-  const panel = ui.overlay.querySelector(".panel");
-  const h1 = panel.querySelector("h1");
-  const sub = panel.querySelector(".sub");
+  const panel = ui.overlay?.querySelector(".panel");
+  const h1 = panel?.querySelector("h1");
+  const sub = panel?.querySelector(".sub");
   const btn = ui.btnStart;
-  h1.textContent = win ? "胜利！" : "游戏结束";
-  sub.textContent = win
-    ? `恭喜通关！分数：${state.score}`
-    : `基地被摧毁或生命耗尽。分数：${state.score}`;
-  btn.textContent = "再来一局";
+  if (h1) h1.textContent = win ? "胜利！" : "游戏结束";
+  const total = state.scores[0] + state.scores[1];
+  if (sub) {
+    sub.textContent = win
+      ? `恭喜通关！P1：${state.scores[0]} 分｜P2：${state.scores[1]} 分｜总分：${total}`
+      : `基地被摧毁或全员阵亡。P1：${state.scores[0]} 分｜P2：${state.scores[1]} 分｜总分：${total}`;
+  }
+  if (btn) btn.textContent = "再来一局";
 }
 
 // ===== AI =====
@@ -399,7 +491,7 @@ function enemySpawnPoint() {
 function canSpawnAt(x, y) {
   const box = { x, y, w: 28, h: 28 };
   for (const tile of state.solids) if (rectsOverlap(box, tile.rect())) return false;
-  if (state.player && state.player.alive && rectsOverlap(box, state.player.rect())) return false;
+  for (const p of state.players) if (p && p.alive && rectsOverlap(box, p.rect())) return false;
   for (const e of state.enemies) if (e.alive && rectsOverlap(box, e.rect())) return false;
   return true;
 }
@@ -428,9 +520,9 @@ function aiUpdateEnemy(e, dt) {
   e.ai.turnTimer -= dt;
   e.ai.shootTimer -= dt;
 
-  // 简单追踪：若与玩家同轴且视线无阻，有更高概率转向并射击
-  const p = state.player;
-  if (p && p.alive) {
+  // 简单追踪：锁定最近的存活玩家；若同轴且视线无阻，转向并射击
+  const p = pickNearestAlivePlayer(e);
+  if (p) {
     const ec = e.center();
     const pc = p.center();
     const dx = pc.x - ec.x;
@@ -474,16 +566,32 @@ function aiUpdateEnemy(e, dt) {
   }
 }
 
+function pickNearestAlivePlayer(e) {
+  let best = null;
+  let bestD2 = Infinity;
+  const ec = e.center();
+  for (const p of state.players) {
+    if (!p || !p.alive) continue;
+    const pc = p.center();
+    const dx = pc.x - ec.x;
+    const dy = pc.y - ec.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestD2) { bestD2 = d2; best = p; }
+  }
+  return best;
+}
+
 // ===== 逻辑更新 =====
 function update(dt) {
-  if (input.pausePressed) {
-    input.pausePressed = false;
+  if (pausePressed) {
+    pausePressed = false;
     togglePause();
   }
 
   if (!state.running || state.paused || state.over) {
     // 清理一次性边沿输入
-    input.firePressed = false;
+    inputP1.firePressed = false;
+    inputP2.firePressed = false;
     return;
   }
 
@@ -495,22 +603,28 @@ function update(dt) {
     state.enemySpawnTimer = rand(0.8, 1.3);
   }
 
-  // 玩家
-  const p = state.player;
-  if (p && p.alive) {
-    p.invuln = Math.max(0, p.invuln - dt);
-    p.cooldown = Math.max(0, p.cooldown - dt);
-
-    const wantDir = dirFromInput();
-    if (wantDir !== null) p.dir = wantDir;
-    const v = DIR_V[p.dir];
-    const moving = input.up || input.down || input.left || input.right;
-    if (moving) {
-      tryMoveTank(p, v.x * p.speed * dt, v.y * p.speed * dt);
-    }
-    if (input.firePressed) {
-      fireFromTank(p);
-    }
+  // 玩家（双人）
+  const p1 = state.players[0];
+  const p2 = state.players[1];
+  if (p1 && p1.alive) {
+    p1.invuln = Math.max(0, p1.invuln - dt);
+    p1.cooldown = Math.max(0, p1.cooldown - dt);
+    const wantDir = dirFromInput(inputP1, moveP1);
+    if (wantDir !== null) p1.dir = wantDir;
+    const v = DIR_V[p1.dir];
+    const moving = inputP1.up || inputP1.down || inputP1.left || inputP1.right;
+    if (moving) tryMoveTank(p1, v.x * p1.speed * dt, v.y * p1.speed * dt);
+    if (inputP1.firePressed) fireFromTank(p1);
+  }
+  if (p2 && p2.alive) {
+    p2.invuln = Math.max(0, p2.invuln - dt);
+    p2.cooldown = Math.max(0, p2.cooldown - dt);
+    const wantDir = dirFromInput(inputP2, moveP2);
+    if (wantDir !== null) p2.dir = wantDir;
+    const v = DIR_V[p2.dir];
+    const moving = inputP2.up || inputP2.down || inputP2.left || inputP2.right;
+    if (moving) tryMoveTank(p2, v.x * p2.speed * dt, v.y * p2.speed * dt);
+    if (inputP2.firePressed) fireFromTank(p2);
   }
 
   // 敌人
@@ -556,18 +670,22 @@ function update(dt) {
     if (!b.alive) continue;
 
     // 命中坦克
-    if (b.owner === "enemy" && state.player && state.player.alive) {
-      const pr = state.player.rect();
-      if (rectsOverlap(br, pr) && state.player.invuln <= 0) {
-        b.alive = false;
-        killPlayer();
+    if (b.owner === "enemy") {
+      for (let i = 0; i < state.players.length; i++) {
+        const p = state.players[i];
+        if (!p || !p.alive) continue;
+        if (rectsOverlap(br, p.rect()) && p.invuln <= 0) {
+          b.alive = false;
+          killPlayer(i);
+          break;
+        }
       }
-    } else if (b.owner === "player") {
+    } else if (b.owner === "p1" || b.owner === "p2") {
       for (const e of state.enemies) {
         if (!e.alive) continue;
         if (rectsOverlap(br, e.rect()) && e.invuln <= 0) {
           b.alive = false;
-          killEnemy(e);
+          killEnemy(e, b.owner);
           break;
         }
       }
@@ -586,29 +704,36 @@ function update(dt) {
   updateHUD();
 
   // 清理一次性边沿输入
-  input.firePressed = false;
+  inputP1.firePressed = false;
+  inputP2.firePressed = false;
 }
 
-function killEnemy(e) {
+function killEnemy(e, owner) {
   e.alive = false;
   state.enemiesAlive = Math.max(0, state.enemiesAlive - 1);
-  state.score += 100;
+  if (owner === "p2") state.scores[1] += 100;
+  else if (owner === "p1") state.scores[0] += 100;
 }
 
-function killPlayer() {
-  state.lives -= 1;
-  if (state.lives <= 0) {
-    state.player.alive = false;
-    gameOver(false);
+function killPlayer(playerIdx) {
+  state.lives[playerIdx] -= 1;
+  const p = state.players[playerIdx];
+  if (!p) return;
+  if (state.lives[playerIdx] <= 0) {
+    p.alive = false;
+    // 两人都死了才失败（基地被毁另算）
+    if (!state.players.some(pp => pp && pp.alive)) gameOver(false);
     return;
   }
-  // 重生
-  const spawn = findFreeTankPos(WORLD_W / 2 - 14, WORLD_H - 2 * TILE - 14, state.player.w, state.player.h);
-  state.player.x = spawn.x;
-  state.player.y = spawn.y;
-  state.player.dir = DIR.UP;
-  state.player.invuln = 1.4;
-  state.player.cooldown = 0.2;
+  // 重生（各自回到自己的出生侧）
+  const y0 = WORLD_H - 2 * TILE - 14;
+  const desiredX = playerIdx === 0 ? TILE * 2 : (WORLD_W - TILE * 3);
+  const spawn = findFreeTankPos(desiredX, y0, p.w, p.h, p);
+  p.x = spawn.x;
+  p.y = spawn.y;
+  p.dir = DIR.UP;
+  p.invuln = 1.4;
+  p.cooldown = 0.2;
 }
 
 function isRectFree(box) {
@@ -623,21 +748,40 @@ function isRectFree(box) {
     if (!e.alive) continue;
     if (rectsOverlap(box, e.rect())) return false;
   }
-  // 玩家自己（在reset时尚未创建；在重生时允许覆盖旧位置检查）
-  if (state.player && state.player.alive) {
-    if (rectsOverlap(box, state.player.rect())) return false;
+  // 玩家阻挡（避免出生压坦克）
+  for (const p of state.players) {
+    if (!p || !p.alive) continue;
+    if (rectsOverlap(box, p.rect())) return false;
   }
   return true;
 }
 
-function findFreeTankPos(x, y, w, h) {
+function isRectFreeIgnoring(box, ignoreTank) {
+  if (!ignoreTank) return isRectFree(box);
+  // 复制 isRectFree 逻辑，但忽略指定玩家
+  if (box.x < 0 || box.y < 0 || box.x + box.w > WORLD_W || box.y + box.h > WORLD_H) return false;
+  for (const tile of state.solids) {
+    if (rectsOverlap(box, tile.rect())) return false;
+  }
+  for (const e of state.enemies) {
+    if (!e.alive) continue;
+    if (rectsOverlap(box, e.rect())) return false;
+  }
+  for (const p of state.players) {
+    if (!p || !p.alive || p === ignoreTank) continue;
+    if (rectsOverlap(box, p.rect())) return false;
+  }
+  return true;
+}
+
+function findFreeTankPos(x, y, w, h, ignoreTank) {
   // 以(x,y)为中心，螺旋扩散寻找空位（步长=8像素，足够细）
   const start = {
     x: clamp(x, 0, WORLD_W - w),
     y: clamp(y, 0, WORLD_H - h),
     w, h,
   };
-  if (isRectFree(start)) return { x: start.x, y: start.y };
+  if (isRectFreeIgnoring(start, ignoreTank)) return { x: start.x, y: start.y };
 
   const step = 8;
   const maxR = Math.ceil(Math.max(WORLD_W, WORLD_H) / step);
@@ -660,7 +804,7 @@ function findFreeTankPos(x, y, w, h) {
         y: clamp(c.y, 0, WORLD_H - h),
         w, h,
       };
-      if (isRectFree(box)) return { x: box.x, y: box.y };
+      if (isRectFreeIgnoring(box, ignoreTank)) return { x: box.x, y: box.y };
     }
   }
   // 极端兜底：左下角
@@ -675,6 +819,7 @@ function togglePause() {
 
 // ===== 渲染 =====
 function drawBackground(vp) {
+  if (!ctx) return;
   // 画布背景（屏幕坐标）
   ctx.clearRect(0, 0, vp.w, vp.h);
   // 信封边（留白区域）
@@ -782,13 +927,15 @@ function drawTank(vp, t) {
   const w = t.w * vp.scale;
   const h = t.h * vp.scale;
 
-  const body = t.isPlayer ? "rgba(96,165,250,.95)" : "rgba(245,158,11,.95)";
+  const body = t.isPlayer
+    ? (t.playerId === 2 ? "rgba(52,211,153,.92)" : "rgba(96,165,250,.95)")
+    : "rgba(245,158,11,.95)";
   const edge = "rgba(0,0,0,.30)";
   const invulnGlow = t.invuln > 0 && t.isPlayer;
 
   ctx.save();
   if (invulnGlow) {
-    ctx.shadowColor = "rgba(96,165,250,.9)";
+    ctx.shadowColor = t.playerId === 2 ? "rgba(52,211,153,.9)" : "rgba(96,165,250,.9)";
     ctx.shadowBlur = 18;
   }
 
@@ -829,7 +976,10 @@ function drawTank(vp, t) {
 function drawBullet(vp, b) {
   const p = worldToScreen(vp, b.x, b.y);
   ctx.save();
-  ctx.fillStyle = b.owner === "player" ? "rgba(229,231,235,.95)" : "rgba(251,113,133,.95)";
+  ctx.fillStyle =
+    b.owner === "p1" ? "rgba(229,231,235,.95)" :
+    b.owner === "p2" ? "rgba(52,211,153,.95)" :
+    "rgba(251,113,133,.95)";
   ctx.beginPath();
   ctx.arc(p.x, p.y, b.r * vp.scale, 0, Math.PI * 2);
   ctx.fill();
@@ -850,6 +1000,7 @@ function drawOverlayHints(vp) {
 }
 
 function render() {
+  if (!ctx) return;
   const vp = computeViewport();
   drawBackground(vp);
 
@@ -860,7 +1011,7 @@ function render() {
   }
 
   // 坦克
-  if (state.player && state.player.alive) drawTank(vp, state.player);
+  for (const p of state.players) if (p && p.alive) drawTank(vp, p);
   for (const e of state.enemies) if (e.alive) drawTank(vp, e);
 
   // 子弹
@@ -884,27 +1035,29 @@ function frame(ts) {
 
 // ===== UI绑定 =====
 function showMenu() {
-  ui.overlay.classList.remove("hidden");
-  const panel = ui.overlay.querySelector(".panel");
-  panel.querySelector("h1").textContent = "坦克大战";
-  panel.querySelector(".sub").textContent = "WASD/方向键移动，空格/回车开火，P暂停";
-  ui.btnStart.textContent = "开始游戏";
+  if (ui.overlay) ui.overlay.classList.remove("hidden");
+  const panel = ui.overlay?.querySelector(".panel");
+  const h1 = panel?.querySelector("h1");
+  const sub = panel?.querySelector(".sub");
+  if (h1) h1.textContent = "坦克大战";
+  if (sub) sub.textContent = "P1: WASD+空格｜P2: 方向键+回车｜P暂停";
+  if (ui.btnStart) ui.btnStart.textContent = "开始游戏";
 }
 
 function startGame() {
   resetGame();
   state.running = true;
-  ui.overlay.classList.add("hidden");
+  if (ui.overlay) ui.overlay.classList.add("hidden");
   updateHUD();
 }
 
-ui.btnStart.addEventListener("click", () => {
+ui.btnStart?.addEventListener("click", () => {
   startGame();
 });
-ui.btnPause.addEventListener("click", () => {
+ui.btnPause?.addEventListener("click", () => {
   togglePause();
 });
-ui.btnRestart.addEventListener("click", () => {
+ui.btnRestart?.addEventListener("click", () => {
   startGame();
 });
 
