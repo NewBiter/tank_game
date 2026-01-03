@@ -1046,6 +1046,7 @@ const state = {
   bullets: /** @type {Bullet[]} */ ([]),
   powerUps: /** @type {Array<{x:number,y:number,type:"shield"|"rapid"|"pierce",life:number}>} */ ([]),
   boss: /** @type {null|{x:number,y:number,w:number,h:number,dir:number,speed:number,cooldown:number,invuln:number,alive:boolean,hp:number,maxHp:number,ai:{turn:number,shoot:number,burst:number,spawn:number,phase:number}}} */ (null),
+  bossDeathBanner: /** @type {null|{remaining:number,text:string}>} */ (null),
   transition: /** @type {null|{kind:"nextlevel"|"menu",remaining:number,nextLevel?:number,baseTitle:string,baseSub:string}} */ (null),
   lastTime: 0,
 };
@@ -1406,6 +1407,18 @@ function pickNearestAlivePlayer(e) {
 
 // ===== 逻辑更新 =====
 function update(dt) {
+  // Boss死亡前的2秒醒目提示：期间冻结战斗，倒计时结束进入结算
+  if (state.bossDeathBanner) {
+    state.bossDeathBanner.remaining -= dt;
+    if (state.bossDeathBanner.remaining <= 0) {
+      state.bossDeathBanner = null;
+      gameOver(true);
+    }
+    inputP1.firePressed = false;
+    inputP2.firePressed = false;
+    return;
+  }
+
   // 过渡倒计时：无论暂停/结束都要跑
   if (state.transition && ui.overlay) {
     state.transition.remaining -= dt;
@@ -1631,7 +1644,8 @@ function update(dt) {
       if (!state.boss) spawnBoss();
       else if (!state.boss.alive) {
         // Boss阶段：以击败Boss为最终胜利
-        gameOver(true);
+        // 若正在播放死亡提示，则等待2秒后由提示逻辑进入结算
+        if (!state.bossDeathBanner) gameOver(true);
       }
     } else {
       onLevelCleared();
@@ -1824,6 +1838,8 @@ function killBoss(owner) {
   const cc = { x: state.boss.x + state.boss.w / 2, y: state.boss.y + state.boss.h / 2 };
   spawnExplosion(cc.x, cc.y, owner, 1.8);
   state.boss.alive = false;
+  // Boss死亡前：弹出醒目台词2秒，再进入结算界面
+  state.bossDeathBanner = { remaining: 2, text: "爸爸，我错了o(╥﹏╥)o" };
   // 奖励分
   if (owner === "p2") state.scores[1] += 1200;
   else if (owner === "p1") state.scores[0] += 1200;
@@ -2421,6 +2437,45 @@ function drawOverlayHints(vp) {
   ctx.restore();
 }
 
+function drawBossDeathBanner(vp) {
+  if (!ctx || !state.bossDeathBanner) return;
+  const text = state.bossDeathBanner.text || "爸爸，我错了o(╥﹏╥)o";
+  const sec = Math.max(0, Math.ceil(state.bossDeathBanner.remaining));
+  const cx = vp.offsetX + (WORLD_W * vp.scale) / 2;
+  const cy = vp.offsetY + (WORLD_H * vp.scale) / 2;
+
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,.70)";
+  ctx.fillRect(vp.offsetX, vp.offsetY, WORLD_W * vp.scale, WORLD_H * vp.scale);
+
+  // 霓虹描边效果
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const fontSize = Math.max(26, Math.round(44 * vp.scale));
+  ctx.font = `900 ${fontSize}px ui-sans-serif,system-ui,"Noto Sans SC","PingFang SC","Microsoft YaHei"`;
+
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.shadowColor = "rgba(251,113,133,.85)";
+  ctx.shadowBlur = 26;
+  ctx.strokeStyle = "rgba(251,113,133,.65)";
+  ctx.lineWidth = Math.max(4, Math.round(4 * vp.scale));
+  ctx.strokeText(text, cx, cy - 10 * vp.scale);
+  ctx.restore();
+
+  ctx.fillStyle = "rgba(255,255,255,.97)";
+  ctx.shadowColor = "rgba(0,0,0,.75)";
+  ctx.shadowBlur = 18;
+  ctx.fillText(text, cx, cy - 10 * vp.scale);
+
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "rgba(167,176,192,.95)";
+  ctx.font = `700 ${Math.max(14, Math.round(18 * vp.scale))}px ui-sans-serif,system-ui`;
+  ctx.fillText(`恭喜玩家！${sec}s 后进入结算…`, cx, cy + fontSize * 0.9);
+
+  ctx.restore();
+}
+
 function render() {
   if (!ctx) return;
   const vp = computeViewport();
@@ -2447,6 +2502,9 @@ function render() {
   for (const g of state.grass) drawGrass(vp, g);
   // 爆炸/火花特效（放在最上层，避免被草盖住）
   drawFX(vp);
+
+  // Boss死亡提示（2秒）
+  if (state.bossDeathBanner) drawBossDeathBanner(vp);
 
   drawOverlayHints(vp);
 }
