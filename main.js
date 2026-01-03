@@ -8,6 +8,293 @@ const ctx = /** @type {CanvasRenderingContext2D|null} */ (canvas?.getContext("2d
 // 仅用于视觉动画，不影响物理与玩法
 let gfxTime = 0;
 
+// ===== 音频（BGM + 命中音效，零资源文件）=====
+function createAudio() {
+  /** @type {AudioContext|null} */
+  let ac = null;
+  let master = null;
+  let comp = null;
+  let musicBus = null;
+  let sfxBus = null;
+  let musicLP = null;
+  let delay = null;
+  let delayFb = null;
+  let muted = false;
+  let musicOn = false;
+  let timer = null;
+  let nextT = 0;
+  let step = 0;
+
+  const bpm = 108;
+  const stepDur = (60 / bpm) / 4; // 16步/小节
+  const lookAhead = 0.12;
+
+  function ensure() {
+    if (ac) return true;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return false;
+    ac = new Ctx();
+
+    master = ac.createGain();
+    master.gain.value = 0.65;
+
+    comp = ac.createDynamicsCompressor();
+    comp.threshold.value = -22;
+    comp.knee.value = 18;
+    comp.ratio.value = 3.5;
+    comp.attack.value = 0.01;
+    comp.release.value = 0.16;
+
+    musicBus = ac.createGain();
+    sfxBus = ac.createGain();
+    musicBus.gain.value = 0.40;
+    sfxBus.gain.value = 1.00;
+
+    // 音乐：低通 + 轻延迟（让声音更柔和、空间感更自然）
+    musicLP = ac.createBiquadFilter();
+    musicLP.type = "lowpass";
+    musicLP.frequency.value = 1200;
+    musicLP.Q.value = 0.6;
+
+    delay = ac.createDelay(0.35);
+    delay.delayTime.value = 0.18;
+    delayFb = ac.createGain();
+    delayFb.gain.value = 0.25;
+
+    musicBus.connect(musicLP);
+    musicLP.connect(comp);
+    // delay send
+    musicLP.connect(delay);
+    delay.connect(delayFb);
+    delayFb.connect(delay);
+    delay.connect(comp);
+
+    sfxBus.connect(comp);
+    comp.connect(master);
+    master.connect(ac.destination);
+
+    syncUI();
+    return true;
+  }
+
+  function syncUI() {
+    if (ui?.btnSound) ui.btnSound.textContent = muted ? "🔇" : "🔊";
+    if (master && ac) master.gain.setValueAtTime(muted ? 0 : 0.65, ac.currentTime);
+  }
+
+  function unlock() {
+    if (!ensure()) return;
+    if (ac.state === "suspended") ac.resume();
+    // 移动端解锁：无声振荡器
+    const o = ac.createOscillator();
+    const g = ac.createGain();
+    g.gain.value = 0;
+    o.connect(g).connect(sfxBus);
+    o.start();
+    o.stop(ac.currentTime + 0.01);
+  }
+
+  function hz(semiFromA4) {
+    return 440 * Math.pow(2, semiFromA4 / 12);
+  }
+
+  function envGain(g, t0, a, d, s, r, peak) {
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.linearRampToValueAtTime(peak, t0 + a);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0001, peak * s), t0 + a + d);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + a + d + r);
+  }
+
+  function osc({ freq, type, t0, dur, peak, dest, detune = 0 }) {
+    if (!ac) return;
+    const o = ac.createOscillator();
+    const g = ac.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t0);
+    o.detune.value = detune;
+    envGain(g, t0, 0.005, Math.min(0.06, dur * 0.25), 0.55, Math.max(0.05, dur * 0.8), peak);
+    o.connect(g).connect(dest);
+    o.start(t0);
+    o.stop(t0 + dur + 0.08);
+  }
+
+  function noiseBurst({ t0, dur, peak, hp, bp }) {
+    if (!ac) return;
+    const len = Math.floor(ac.sampleRate * dur);
+    const buf = ac.createBuffer(1, len, ac.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2);
+    const src = ac.createBufferSource();
+    src.buffer = buf;
+    const g = ac.createGain();
+    envGain(g, t0, 0.001, dur * 0.2, 0.25, dur * 0.9, peak);
+    let node = src;
+    if (hp) {
+      const f = ac.createBiquadFilter();
+      f.type = "highpass";
+      f.frequency.value = hp;
+      node.connect(f);
+      node = f;
+    }
+    if (bp) {
+      const f = ac.createBiquadFilter();
+      f.type = "bandpass";
+      f.frequency.value = bp;
+      f.Q.value = 1.2;
+      node.connect(f);
+      node = f;
+    }
+    node.connect(g).connect(sfxBus);
+    src.start(t0);
+  }
+
+  function kick(t0) {
+    if (!ac) return;
+    const o = ac.createOscillator();
+    const g = ac.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(120, t0);
+    o.frequency.exponentialRampToValueAtTime(46, t0 + 0.09);
+    envGain(g, t0, 0.001, 0.02, 0.2, 0.14, 0.55);
+    o.connect(g).connect(musicBus);
+    o.start(t0);
+    o.stop(t0 + 0.2);
+  }
+
+  function hat(t0) {
+    if (!ac) return;
+    const len = Math.floor(ac.sampleRate * 0.03);
+    const buf = ac.createBuffer(1, len, ac.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.5);
+    const src = ac.createBufferSource();
+    src.buffer = buf;
+    const hp = ac.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = 7000;
+    const g = ac.createGain();
+    envGain(g, t0, 0.001, 0.01, 0.2, 0.05, 0.08);
+    src.connect(hp).connect(g).connect(musicBus);
+    src.start(t0);
+  }
+
+  function snare(t0) {
+    noiseBurst({ t0, dur: 0.11, peak: 0.18, hp: 1200, bp: 2200 });
+    osc({ freq: 180, type: "triangle", t0, dur: 0.10, peak: 0.10, dest: sfxBus });
+  }
+
+  // 和弦进行（A小调氛围）：Am - F - G - Em
+  const prog = [
+    { root: -12, triad: [0, 3, 7] },  // Am
+    { root: -17, triad: [0, 4, 7] },  // F
+    { root: -14, triad: [0, 4, 7] },  // G
+    { root: -19, triad: [0, 3, 7] },  // Em
+  ];
+
+  function schedule() {
+    if (!ac || !musicOn || muted || ac.state === "suspended") return;
+    const now = ac.currentTime;
+    if (nextT < now) nextT = now;
+    while (nextT < now + lookAhead) {
+      const bar = Math.floor(step / 16) % prog.length;
+      const s = step % 16;
+      const chord = prog[bar];
+
+      // 鼓：kick on 0,8；snare on 4,12；hat every 2 steps
+      if (s === 0 || s === 8) kick(nextT);
+      if (s === 4 || s === 12) snare(nextT);
+      if (s % 2 === 0) hat(nextT);
+
+      // Pad（和弦垫底，每小节一次）
+      if (s === 0) {
+        for (const n of chord.triad) {
+          osc({
+            freq: hz(chord.root + n),
+            type: "sawtooth",
+            t0: nextT,
+            dur: stepDur * 16 * 0.98,
+            peak: 0.035,
+            dest: musicBus,
+            detune: (n === 0 ? -6 : 6),
+          });
+        }
+      }
+
+      // Arp（琶音：更柔和的triangle）
+      const arpSeq = [0, 2, 1, 2, 0, 2, 1, 2];
+      if (s % 2 === 0) {
+        const idx = arpSeq[(s / 2) % arpSeq.length];
+        const semi = chord.root + chord.triad[idx] + 12; // 上移一组
+        osc({
+          freq: hz(semi),
+          type: "triangle",
+          t0: nextT,
+          dur: stepDur * 1.6,
+          peak: 0.045,
+          dest: musicBus,
+        });
+      }
+
+      step += 1;
+      nextT += stepDur;
+    }
+  }
+
+  function startMusic() {
+    if (!ensure() || !ac) return;
+    if (musicOn) return;
+    if (ac.state === "suspended") return;
+    musicOn = true;
+    step = 0;
+    nextT = ac.currentTime;
+    timer = setInterval(schedule, 30);
+  }
+
+  function stopMusic() {
+    musicOn = false;
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  function toggleMute() {
+    muted = !muted;
+    syncUI();
+  }
+
+  // 命中：更像“砰/金属火花”
+  function hit(owner) {
+    if (!ensure() || !ac || ac.state === "suspended" || muted) return;
+    const t0 = ac.currentTime;
+    const base = owner === "enemy" ? 260 : (owner === "p2" ? 340 : 300);
+    // click + 带通噪声
+    osc({ freq: base * 2.2, type: "square", t0, dur: 0.035, peak: 0.10, dest: sfxBus });
+    noiseBurst({ t0: t0 + 0.005, dur: 0.06, peak: 0.16, hp: 1800, bp: 3200 });
+  }
+
+  // 爆炸：低频下落 + 低通噪声
+  function boom(owner) {
+    if (!ensure() || !ac || ac.state === "suspended" || muted) return;
+    const t0 = ac.currentTime;
+    const f0 = owner === "enemy" ? 95 : 120;
+    // 低频下落
+    const o = ac.createOscillator();
+    const g = ac.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(f0 * 2.2, t0);
+    o.frequency.exponentialRampToValueAtTime(f0, t0 + 0.14);
+    envGain(g, t0, 0.001, 0.03, 0.3, 0.22, 0.22);
+    o.connect(g).connect(sfxBus);
+    o.start(t0);
+    o.stop(t0 + 0.35);
+    // 低通噪声
+    noiseBurst({ t0: t0 + 0.01, dur: 0.18, peak: 0.22, hp: 60, bp: 420 });
+  }
+
+  return { unlock, startMusic, stopMusic, toggleMute, hit, boom };
+}
+
+const audio = createAudio();
+
 function setText(el, text) {
   if (!el) return;
   el.textContent = String(text);
@@ -41,6 +328,7 @@ const ui = {
   btnStart: $("#btn-start"),
   btnPause: $("#btn-pause"),
   btnRestart: $("#btn-restart"),
+  btnSound: $("#btn-sound"),
   // 兼容旧HUD（#score/#lives）与新HUD（#score1/#lives1/#score2/#lives2）
   score1: $("#score1") || $("#score"),
   lives1: $("#lives1") || $("#lives"),
@@ -72,6 +360,7 @@ function colorForOwner(owner) {
 }
 
 function spawnImpact(x, y, owner, strength = 1) {
+  audio.hit(owner);
   const c = colorForOwner(owner);
   const n = Math.floor(10 * strength);
   for (let i = 0; i < n; i++) {
@@ -99,6 +388,7 @@ function spawnImpact(x, y, owner, strength = 1) {
 }
 
 function spawnExplosion(x, y, owner, strength = 1) {
+  audio.boom(owner);
   const c = colorForOwner(owner);
   const n = Math.floor(26 * strength);
   for (let i = 0; i < n; i++) {
@@ -513,25 +803,25 @@ const LEVELS = [
     eliteChance: 0.30,
     dropChance: 0.30,
     layout: [
-      "..S..####......####..S....",
+      "..S..####..GG..####..S....",
       "..S..#..#..S..#..#..S.....",
-      ".....####..S..####........",
+      ".....####..S..####..GGGG..",
       "..~~~~......S......~~~~...",
       "..~~~~..####..####..~~~~..",
       "........#..#..#..#........",
       "..####..####..####..####..",
       "..#..#................#..#",
       "..####..S..S..S..S..####..",
-      "..........................",
-      "....G..G..G..G..G..G..G...",
+      "....GGG........GGG........",
+      "..GGGGGG..GGGG..GGGGGG....",
       "..........................",
       "..####..####..####..####..",
-      "..#..#..............#..#..",
+      "..#..#..GGGG..GGGG..#..#..",
       "..####..S..S..S..S..####..",
-      "..............S...........",
+      "....GGGG......S......GG...",
       "..~~~~..####..####..~~~~..",
-      "..~~~~..............~~~~..",
-      "...........BB.............",
+      "..~~~~..GGGG....GGGG~~~~..",
+      "....GG.....BB.....GG......",
       "..........................",
     ],
   },
@@ -819,7 +1109,10 @@ function aiUpdateEnemy(e, dt) {
     const alignedY = Math.abs(dy) < eps;
     if (alignedX || alignedY) {
       // 视线被阻挡？
-      const blockers = state.tiles.filter(t => t.blocksBullets() && t.type !== "grass");
+      const blockers = state.tiles.filter(t => {
+        if (t.type === "grass") return !!state.levelCfg?.night; // 第3关：草丛可遮挡视线
+        return t.blocksBullets();
+      });
       let blocked = false;
       for (const t of blockers) {
         if (lineIntersectsRect(ec.x, ec.y, pc.x, pc.y, t.rect())) { blocked = true; break; }
@@ -1295,23 +1588,60 @@ function drawTile(vp, t) {
   }
 }
 
-function drawGrass(vp, t) {
+function drawGrass(vp, t, dense = false) {
   const p = worldToScreen(vp, t.x, t.y);
   const w = t.w * vp.scale;
   const h = t.h * vp.scale;
   ctx.save();
-  ctx.globalAlpha = 0.55;
-  ctx.fillStyle = "rgba(34,197,94,.35)";
+  ctx.globalAlpha = dense ? 0.78 : 0.55;
+  ctx.fillStyle = dense ? "rgba(16,185,129,.52)" : "rgba(34,197,94,.35)";
   ctx.fillRect(p.x, p.y, w, h);
-  ctx.globalAlpha = 0.85;
-  ctx.strokeStyle = "rgba(34,197,94,.65)";
+  // 线条干扰控制：夜战/隐蔽草丛减少笔触
+  ctx.globalAlpha = dense ? 0.55 : 0.85;
+  ctx.strokeStyle = dense ? "rgba(16,185,129,.55)" : "rgba(34,197,94,.65)";
   ctx.lineWidth = 1;
-  for (let i = 0; i < 6; i++) {
-    const xx = p.x + (i / 6) * w;
+  const strokes = dense ? 3 : 6;
+  for (let i = 0; i < strokes; i++) {
+    const xx = p.x + (i / strokes) * w;
     ctx.beginPath();
     ctx.moveTo(xx, p.y + h);
-    ctx.lineTo(xx + 4, p.y + h * 0.2);
+    ctx.lineTo(xx + 4, p.y + h * 0.25);
     ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawGrassCoverForPlayers(vp) {
+  // 只在玩家站进草丛时，额外绘制一层“更厚的草”，实现可隐藏己方坦克
+  for (const pl of state.players) {
+    if (!pl || !pl.alive) continue;
+    const pr = pl.rect();
+    for (const g of state.grass) {
+      const gr = g.rect();
+      if (rectsOverlap(pr, gr)) drawGrass(vp, g, true);
+    }
+  }
+}
+
+function drawFriendlyAlwaysVisible(vp) {
+  // 夜战机制改造：两位己方坦克始终可见（不依赖视野圈）
+  ctx.save();
+  ctx.globalAlpha = 0.95;
+  for (const pl of state.players) {
+    if (!pl || !pl.alive) continue;
+    drawTank(vp, pl);
+    // 小信标（便于快速定位队友）
+    const c = pl.center();
+    const p = worldToScreen(vp, c.x, c.y);
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = 0.6;
+    ctx.strokeStyle = pl.playerId === 2 ? "rgba(52,211,153,.95)" : "rgba(96,165,250,.95)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 18 * vp.scale, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
   ctx.restore();
 }
@@ -1602,14 +1932,20 @@ function render() {
   // 道具
   for (const pu of state.powerUps) drawPowerUp(vp, pu);
 
-  // 草地覆盖层（能遮挡坦克/子弹，增加层次）
-  for (const g of state.grass) drawGrass(vp, g);
-
-  // 爆炸/火花特效（放在最上层，避免被草盖住）
-  drawFX(vp);
-
   // 第3关：夜战视野（玩法创新）
-  if (state.levelCfg?.night) drawNightFog(vp);
+  if (state.levelCfg?.night) {
+    // 先画夜雾，再把己方坦克“重新画出来”，并只在草丛中追加覆盖层实现隐藏
+    drawNightFog(vp);
+    drawFriendlyAlwaysVisible(vp);
+    drawGrassCoverForPlayers(vp);
+    // 特效放在最上层（重要反馈不被黑雾吞掉）
+    drawFX(vp);
+  } else {
+    // 草地覆盖层（能遮挡坦克/子弹，增加层次）
+    for (const g of state.grass) drawGrass(vp, g);
+    // 爆炸/火花特效（放在最上层，避免被草盖住）
+    drawFX(vp);
+  }
 
   drawOverlayHints(vp);
 }
@@ -1659,6 +1995,8 @@ function startGame() {
 }
 
 ui.btnStart?.addEventListener("click", () => {
+  audio.unlock();
+  audio.startMusic();
   startGame();
 });
 ui.btnPause?.addEventListener("click", () => {
@@ -1666,6 +2004,10 @@ ui.btnPause?.addEventListener("click", () => {
 });
 ui.btnRestart?.addEventListener("click", () => {
   showMenu();
+});
+ui.btnSound?.addEventListener("click", () => {
+  audio.unlock();
+  audio.toggleMute();
 });
 
 // 初始化
