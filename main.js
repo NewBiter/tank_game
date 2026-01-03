@@ -960,9 +960,15 @@ function update(dt) {
             b.alive = false;
           }
         } else if (t.type === "base") {
+          // 玩家子弹不允许伤害己方基地：命中后直接消失（给轻微反馈），只有敌方子弹才会摧毁基地
           b.alive = false;
-          damageBaseAt(t);
-          spawnImpact(t.x + TILE / 2, t.y + TILE / 2, "enemy", 1.4);
+          if (b.owner === "enemy") {
+            damageBaseAt(t);
+            spawnImpact(t.x + TILE / 2, t.y + TILE / 2, "enemy", 1.4);
+          } else {
+            // 友军误伤屏蔽：提示性火花（不伤害基地）
+            spawnImpact(t.x + TILE / 2, t.y + TILE / 2, b.owner, 0.7);
+          }
         } else {
           // steel
           b.alive = false;
