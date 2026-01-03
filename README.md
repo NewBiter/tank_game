@@ -19,6 +19,29 @@ python3 -m http.server 8000
 
 然后在浏览器访问：`http://localhost:8000`
 
+## 让远方的朋友也能玩（发布到公网）
+
+这是一个**纯静态站点**（只有 `index.html / main.js / style.css`），最适合用静态托管。
+
+### 方案A：GitHub Pages（免费）
+
+1. 把 `/home/vince/game` 里的文件上传到一个 GitHub 仓库（至少包含 `index.html / main.js / style.css`）。
+2. 打开仓库 **Settings → Pages**：
+   - **Source** 选择 `Deploy from a branch`
+   - **Branch** 选择 `main`（或你的分支）和 `/ (root)`
+3. 保存后等待 1-3 分钟，GitHub 会给你一个 `https://xxxx.github.io/xxxx/` 链接。
+4. 把这个链接发给朋友即可直接玩。
+
+### 方案B：Netlify（免费，最省事）
+
+1. 打开 Netlify，新建站点
+2. 直接把包含 `index.html` 的整个文件夹拖拽上传
+3. 等待部署完成，复制它给的公网链接发给朋友
+
+### 方案C：Cloudflare Pages（免费）
+
+把仓库连到 Cloudflare Pages，构建命令留空（静态站不需要构建），输出目录选仓库根目录即可。
+
 ## 操作
 
 - **移动**：WASD 或 方向键
