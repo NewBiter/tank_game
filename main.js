@@ -5,6 +5,9 @@ const $ = (sel) => document.querySelector(sel);
 const canvas = /** @type {HTMLCanvasElement} */ ($("#game"));
 const ctx = /** @type {CanvasRenderingContext2D|null} */ (canvas?.getContext("2d", { alpha: true }) ?? null);
 
+// 仅用于视觉动画，不影响物理与玩法
+let gfxTime = 0;
+
 function setText(el, text) {
   if (!el) return;
   el.textContent = String(text);
@@ -52,6 +55,123 @@ window.addEventListener("error", (e) => {
 window.addEventListener("unhandledrejection", (e) => {
   showFatalError(e?.reason || e);
 });
+
+// ===== 特效（爆炸/火花）=====
+const fx = {
+  particles: /** @type {Array<{x:number,y:number,vx:number,vy:number,life:number,max:number,r:number,color:string,glow:number}>} */ ([]),
+  rings: /** @type {Array<{x:number,y:number,life:number,max:number,color:string,from:number,to:number}>} */ ([]),
+};
+
+function colorForOwner(owner) {
+  if (owner === "p1") return "#a5d8ff";
+  if (owner === "p2") return "#34d399";
+  if (owner === "enemy") return "#fb7185";
+  return "#e5e7eb";
+}
+
+function spawnImpact(x, y, owner, strength = 1) {
+  const c = colorForOwner(owner);
+  const n = Math.floor(10 * strength);
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, Math.PI * 2);
+    const sp = rand(40, 160) * strength;
+    fx.particles.push({
+      x, y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      life: rand(0.10, 0.22) * strength,
+      max: 0,
+      r: rand(1.2, 2.6) * strength,
+      color: c,
+      glow: 0.55,
+    });
+  }
+  fx.rings.push({
+    x, y,
+    life: 0.18 * strength,
+    max: 0.18 * strength,
+    color: c,
+    from: 3 * strength,
+    to: 16 * strength,
+  });
+}
+
+function spawnExplosion(x, y, owner, strength = 1) {
+  const c = colorForOwner(owner);
+  const n = Math.floor(26 * strength);
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, Math.PI * 2);
+    const sp = rand(60, 240) * strength;
+    fx.particles.push({
+      x, y,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      life: rand(0.25, 0.55) * strength,
+      max: 0,
+      r: rand(1.8, 4.2) * strength,
+      color: c,
+      glow: 0.75,
+    });
+  }
+  fx.rings.push({
+    x, y,
+    life: 0.42 * strength,
+    max: 0.42 * strength,
+    color: c,
+    from: 6 * strength,
+    to: 46 * strength,
+  });
+}
+
+function updateFX(dt) {
+  for (const p of fx.particles) {
+    p.life -= dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    // 空气阻尼
+    p.vx *= Math.pow(0.02, dt);
+    p.vy *= Math.pow(0.02, dt);
+  }
+  fx.particles = fx.particles.filter(p => p.life > 0);
+  for (const r of fx.rings) r.life -= dt;
+  fx.rings = fx.rings.filter(r => r.life > 0);
+}
+
+function drawFX(vp) {
+  if (!ctx) return;
+  if (fx.particles.length === 0 && fx.rings.length === 0) return;
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+
+  // 环
+  for (const r of fx.rings) {
+    const t = 1 - clamp(r.life / r.max, 0, 1);
+    const rr = r.from + (r.to - r.from) * t;
+    const alpha = (1 - t) * 0.55;
+    const p = worldToScreen(vp, r.x, r.y);
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = r.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, rr * vp.scale, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // 粒子
+  for (const p0 of fx.particles) {
+    const t = clamp(p0.life / (p0.max || (p0.max = p0.life)), 0, 1);
+    const alpha = t * 0.9;
+    const p = worldToScreen(vp, p0.x, p0.y);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = p0.color;
+    // 小“火花点”
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p0.r * vp.scale, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
 
 // ===== 世界与渲染 =====
 const TILE = 32;
@@ -655,14 +775,19 @@ function update(dt) {
       if (!t.blocksBullets()) continue;
       if (rectsOverlap(br, t.rect())) {
         b.alive = false;
+        // 命中火花（砖墙更强）
+        spawnImpact(b.x, b.y, b.owner, t.type === "brick" ? 1.15 : 0.85);
         if (t.type === "brick") {
           t.hp -= 1;
           if (t.hp <= 0) {
             state.tiles = state.tiles.filter(x => x !== t);
             splitTiles();
+            // 砖块碎裂小爆
+            spawnImpact(t.x + TILE / 2, t.y + TILE / 2, b.owner, 1.2);
           }
         } else if (t.type === "base") {
           damageBaseAt(t);
+          spawnImpact(t.x + TILE / 2, t.y + TILE / 2, "enemy", 1.4);
         }
         break;
       }
@@ -703,12 +828,18 @@ function update(dt) {
 
   updateHUD();
 
+  // 特效更新（在清理之后，避免引用已死亡对象）
+  updateFX(dt);
+
   // 清理一次性边沿输入
   inputP1.firePressed = false;
   inputP2.firePressed = false;
 }
 
 function killEnemy(e, owner) {
+  // 爆炸（世界坐标）
+  const c = e.center();
+  spawnExplosion(c.x, c.y, owner, 1.15);
   e.alive = false;
   state.enemiesAlive = Math.max(0, state.enemiesAlive - 1);
   if (owner === "p2") state.scores[1] += 100;
@@ -716,6 +847,11 @@ function killEnemy(e, owner) {
 }
 
 function killPlayer(playerIdx) {
+  const pDead = state.players[playerIdx];
+  if (pDead) {
+    const c = pDead.center();
+    spawnExplosion(c.x, c.y, "enemy", 1.0);
+  }
   state.lives[playerIdx] -= 1;
   const p = state.players[playerIdx];
   if (!p) return;
@@ -924,65 +1060,192 @@ function drawGrass(vp, t) {
 
 function drawTank(vp, t) {
   const p = worldToScreen(vp, t.x, t.y);
-  const w = t.w * vp.scale;
-  const h = t.h * vp.scale;
+  // 尽量像素对齐，减少缩放带来的“线条抖动”
+  const x = Math.round(p.x);
+  const y = Math.round(p.y);
+  const w = Math.max(1, Math.round(t.w * vp.scale));
+  const h = Math.max(1, Math.round(t.h * vp.scale));
 
-  const body = t.isPlayer
-    ? (t.playerId === 2 ? "rgba(52,211,153,.92)" : "rgba(96,165,250,.95)")
-    : "rgba(245,158,11,.95)";
-  const edge = "rgba(0,0,0,.30)";
+  const isP1 = t.isPlayer && t.playerId !== 2;
+  const isP2 = t.isPlayer && t.playerId === 2;
+  const baseA = isP1 ? "#60a5fa" : (isP2 ? "#34d399" : "#f59e0b");
+  const baseB = isP1 ? "#1d4ed8" : (isP2 ? "#047857" : "#b45309");
+  const edge = "rgba(0,0,0,.28)";
   const invulnGlow = t.invuln > 0 && t.isPlayer;
 
   ctx.save();
   if (invulnGlow) {
-    ctx.shadowColor = t.playerId === 2 ? "rgba(52,211,153,.9)" : "rgba(96,165,250,.9)";
+    ctx.shadowColor = isP2 ? "rgba(52,211,153,.9)" : "rgba(96,165,250,.9)";
     ctx.shadowBlur = 18;
   }
 
-  // 车身
-  ctx.fillStyle = body;
-  ctx.fillRect(p.x, p.y, w, h);
+  // 车身：装甲渐变 + 内框层次（尽量少用细线描边，避免干扰）
+  const g = ctx.createLinearGradient(x, y, x + w, y + h);
+  g.addColorStop(0, baseA);
+  g.addColorStop(1, baseB);
+  ctx.fillStyle = g;
+  ctx.fillRect(x, y, w, h);
+
+  // 角落暗角（增加立体）
+  ctx.save();
+  ctx.globalAlpha = 0.22;
+  ctx.fillStyle = "rgba(0,0,0,.55)";
+  ctx.fillRect(x, y, Math.round(w * 0.10), h);
+  ctx.fillRect(x + Math.round(w * 0.90), y, Math.round(w * 0.10), h);
+  ctx.restore();
+
+  // 内框亮边
+  ctx.save();
+  ctx.globalAlpha = 0.16;
+  ctx.strokeStyle = "rgba(255,255,255,.9)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + Math.round(w * 0.09), y + Math.round(h * 0.09), Math.round(w * 0.82), Math.round(h * 0.82));
+  ctx.restore();
+
+  // 外描边（轻）
   ctx.strokeStyle = edge;
   ctx.lineWidth = 1;
-  ctx.strokeRect(p.x + 0.5, p.y + 0.5, w - 1, h - 1);
+  ctx.strokeRect(x, y, w, h);
 
   // 履带
   ctx.save();
-  ctx.globalAlpha = 0.3;
-  ctx.fillStyle = "rgba(0,0,0,.6)";
-  ctx.fillRect(p.x + w * 0.08, p.y + h * 0.08, w * 0.14, h * 0.84);
-  ctx.fillRect(p.x + w * 0.78, p.y + h * 0.08, w * 0.14, h * 0.84);
+  ctx.globalAlpha = 0.32;
+  ctx.fillStyle = "rgba(2,6,23,.9)";
+  const trackW = Math.round(w * 0.16);
+  ctx.fillRect(x + Math.round(w * 0.07), y + Math.round(h * 0.08), trackW, Math.round(h * 0.84));
+  ctx.fillRect(x + w - Math.round(w * 0.07) - trackW, y + Math.round(h * 0.08), trackW, Math.round(h * 0.84));
   ctx.restore();
 
+  // 能量高光（只给玩家）：裁剪在车身内，避免溢出“干扰线”
+  if (t.isPlayer) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x + Math.round(w * 0.04), y + Math.round(h * 0.04), Math.round(w * 0.92), Math.round(h * 0.92));
+    ctx.clip();
+    ctx.globalCompositeOperation = "lighter";
+    const pulse = 0.5 + 0.5 * Math.sin(gfxTime * 3.0 + (isP2 ? 1.4 : 0));
+    ctx.globalAlpha = 0.10 + pulse * 0.22;
+    const shift = ((gfxTime * 140) % (w * 2));
+    const x0 = x - w + shift;
+    const x1 = x + w + shift;
+    const sg = ctx.createLinearGradient(x0, y, x1, y + h);
+    sg.addColorStop(0, "rgba(255,255,255,0)");
+    sg.addColorStop(0.49, "rgba(255,255,255,.55)");
+    sg.addColorStop(0.51, "rgba(255,255,255,.08)");
+    sg.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = sg;
+    ctx.fillRect(x, y, w, h);
+    ctx.restore();
+  }
+
   // 炮塔 + 炮管（按方向画）
-  const cx = p.x + w / 2;
-  const cy = p.y + h / 2;
-  ctx.fillStyle = "rgba(0,0,0,.22)";
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  // 炮塔金属感（渐变）
+  const turretR = Math.min(w, h) * 0.22;
+  const tg = ctx.createRadialGradient(cx - turretR * 0.3, cy - turretR * 0.3, turretR * 0.10, cx, cy, turretR);
+  tg.addColorStop(0, "rgba(255,255,255,.28)");
+  tg.addColorStop(0.55, "rgba(17,24,39,.65)");
+  tg.addColorStop(1, "rgba(0,0,0,.55)");
+  ctx.fillStyle = tg;
   ctx.beginPath();
-  ctx.arc(cx, cy, Math.min(w, h) * 0.18, 0, Math.PI * 2);
+  ctx.arc(cx, cy, turretR, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = "rgba(17,24,39,.75)";
-  const tubeW = Math.min(w, h) * 0.16;
-  const tubeL = Math.min(w, h) * 0.55;
-  if (t.dir === DIR.UP) ctx.fillRect(cx - tubeW / 2, cy - tubeL, tubeW, tubeL);
-  if (t.dir === DIR.DOWN) ctx.fillRect(cx - tubeW / 2, cy, tubeW, tubeL);
-  if (t.dir === DIR.LEFT) ctx.fillRect(cx - tubeL, cy - tubeW / 2, tubeL, tubeW);
-  if (t.dir === DIR.RIGHT) ctx.fillRect(cx, cy - tubeW / 2, tubeL, tubeW);
+  // 徽标（P1星 / P2闪电）
+  if (t.isPlayer) {
+    ctx.save();
+    ctx.globalAlpha = 0.88;
+    ctx.fillStyle = "rgba(255,255,255,.88)";
+    if (isP1) {
+      const r1 = turretR * 0.55, r2 = turretR * 0.24;
+      ctx.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const ang = -Math.PI / 2 + i * (Math.PI / 5);
+        const rr = (i % 2 === 0) ? r1 : r2;
+        const xx = cx + Math.cos(ang) * rr;
+        const yy = cy + Math.sin(ang) * rr;
+        if (i === 0) ctx.moveTo(xx, yy); else ctx.lineTo(xx, yy);
+      }
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(cx - turretR * 0.18, cy - turretR * 0.55);
+      ctx.lineTo(cx + turretR * 0.10, cy - turretR * 0.08);
+      ctx.lineTo(cx - turretR * 0.04, cy - turretR * 0.08);
+      ctx.lineTo(cx + turretR * 0.18, cy + turretR * 0.55);
+      ctx.lineTo(cx - turretR * 0.10, cy + turretR * 0.10);
+      ctx.lineTo(cx + turretR * 0.04, cy + turretR * 0.10);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // 炮管（渐变+轻描边，减少杂线）
+  const tubeW = Math.min(w, h) * 0.15;
+  const tubeL = Math.min(w, h) * 0.62;
+  const barrel = (bx, by, bw, bh, horizontal) => {
+    const bg = horizontal
+      ? ctx.createLinearGradient(bx, by, bx, by + bh)
+      : ctx.createLinearGradient(bx, by, bx + bw, by);
+    bg.addColorStop(0, "rgba(255,255,255,.10)");
+    bg.addColorStop(0.5, "rgba(17,24,39,.80)");
+    bg.addColorStop(1, "rgba(0,0,0,.55)");
+    ctx.fillStyle = bg;
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.save();
+    ctx.globalAlpha = 0.12;
+    ctx.strokeStyle = "rgba(255,255,255,.9)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(Math.round(bx), Math.round(by), Math.round(bw), Math.round(bh));
+    ctx.restore();
+  };
+  if (t.dir === DIR.UP) barrel(cx - tubeW / 2, cy - tubeL, tubeW, tubeL, false);
+  if (t.dir === DIR.DOWN) barrel(cx - tubeW / 2, cy, tubeW, tubeL, false);
+  if (t.dir === DIR.LEFT) barrel(cx - tubeL, cy - tubeW / 2, tubeL, tubeW, true);
+  if (t.dir === DIR.RIGHT) barrel(cx, cy - tubeW / 2, tubeL, tubeW, true);
 
   ctx.restore();
 }
 
 function drawBullet(vp, b) {
   const p = worldToScreen(vp, b.x, b.y);
+  const c = colorForOwner(b.owner);
+  const r = Math.max(1, b.r * vp.scale);
+  const v = DIR_V[b.dir];
+
   ctx.save();
-  ctx.fillStyle =
-    b.owner === "p1" ? "rgba(229,231,235,.95)" :
-    b.owner === "p2" ? "rgba(52,211,153,.95)" :
-    "rgba(251,113,133,.95)";
+  ctx.globalCompositeOperation = "lighter";
+
+  // 拖尾（方向反向）
+  const tail = 16 * vp.scale;
+  ctx.globalAlpha = 0.22;
+  ctx.strokeStyle = c;
+  ctx.lineWidth = Math.max(2, r * 1.1);
   ctx.beginPath();
-  ctx.arc(p.x, p.y, b.r * vp.scale, 0, Math.PI * 2);
+  ctx.moveTo(p.x, p.y);
+  ctx.lineTo(p.x - v.x * tail, p.y - v.y * tail);
+  ctx.stroke();
+
+  // 核心弹体（径向渐变发光）
+  const g = ctx.createRadialGradient(p.x - r * 0.25, p.y - r * 0.25, r * 0.2, p.x, p.y, r * 2.2);
+  g.addColorStop(0, "rgba(255,255,255,.95)");
+  g.addColorStop(0.35, `${c}CC`);
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.globalAlpha = 0.85;
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, r * 2.2, 0, Math.PI * 2);
   ctx.fill();
+
+  ctx.globalAlpha = 0.95;
+  ctx.fillStyle = c;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+  ctx.fill();
+
   ctx.restore();
 }
 
@@ -1020,6 +1283,9 @@ function render() {
   // 草地覆盖层（能遮挡坦克/子弹，增加层次）
   for (const g of state.grass) drawGrass(vp, g);
 
+  // 爆炸/火花特效（放在最上层，避免被草盖住）
+  drawFX(vp);
+
   drawOverlayHints(vp);
 }
 
@@ -1028,6 +1294,7 @@ function frame(ts) {
   if (!state.lastTime) state.lastTime = ts;
   const dt = clamp((ts - state.lastTime) / 1000, 0, 1 / 20); // 限制最大步长
   state.lastTime = ts;
+  gfxTime = ts / 1000;
   update(dt);
   render();
   requestAnimationFrame(frame);
