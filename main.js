@@ -8,6 +8,13 @@ const ctx = /** @type {CanvasRenderingContext2D|null} */ (canvas?.getContext("2d
 // 仅用于视觉动画，不影响物理与玩法
 let gfxTime = 0;
 
+// ===== 资源：Boss图片 =====
+const bossImg = new Image();
+bossImg.src = "./Untitled.jpeg";
+let bossImgOk = false;
+bossImg.onload = () => { bossImgOk = true; };
+bossImg.onerror = () => { bossImgOk = false; };
+
 // ===== 音频（BGM + 命中音效，零资源文件）=====
 function createAudio() {
   /** @type {AudioContext|null} */
@@ -2056,30 +2063,57 @@ function drawBoss(vp, boss) {
 
   ctx.save();
   ctx.globalCompositeOperation = "source-over";
-  // Boss本体（紫红渐变）
-  const g = ctx.createLinearGradient(x, y, x + w, y + h);
-  g.addColorStop(0, "#fb7185");
-  g.addColorStop(1, "#7c3aed");
-  ctx.fillStyle = g;
-  ctx.fillRect(x, y, w, h);
-  ctx.globalAlpha = 0.25;
-  ctx.fillStyle = "rgba(0,0,0,.7)";
-  ctx.fillRect(x, y, Math.round(w * 0.12), h);
-  ctx.fillRect(x + Math.round(w * 0.88), y, Math.round(w * 0.12), h);
-  ctx.globalAlpha = 1;
-  ctx.strokeStyle = "rgba(0,0,0,.35)";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(x, y, w, h);
+  // Boss本体：优先使用图片；失败则回退到渐变外观
+  if (bossImgOk && bossImg.naturalWidth > 0 && bossImg.naturalHeight > 0) {
+    // 轻微发光
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = "rgba(251,113,133,.9)";
+    ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+    ctx.restore();
 
-  // 眼睛
-  ctx.save();
-  ctx.globalCompositeOperation = "lighter";
-  ctx.fillStyle = "rgba(255,255,255,.95)";
-  ctx.beginPath();
-  ctx.arc(x + w * 0.32, y + h * 0.38, Math.max(2, 3 * vp.scale), 0, Math.PI * 2);
-  ctx.arc(x + w * 0.68, y + h * 0.38, Math.max(2, 3 * vp.scale), 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    // 保持图片比例，中心裁剪到正方形区域，再拉伸到Boss框
+    const sw = bossImg.naturalWidth;
+    const sh = bossImg.naturalHeight;
+    const s = Math.min(sw, sh);
+    const sx = Math.floor((sw - s) / 2);
+    const sy = Math.floor((sh - s) / 2);
+    ctx.drawImage(bossImg, sx, sy, s, s, x, y, w, h);
+    ctx.restore();
+
+    // 轻描边
+    ctx.strokeStyle = "rgba(0,0,0,.38)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, w, h);
+  } else {
+    // 回退：紫红渐变
+    const g = ctx.createLinearGradient(x, y, x + w, y + h);
+    g.addColorStop(0, "#fb7185");
+    g.addColorStop(1, "#7c3aed");
+    ctx.fillStyle = g;
+    ctx.fillRect(x, y, w, h);
+    ctx.globalAlpha = 0.25;
+    ctx.fillStyle = "rgba(0,0,0,.7)";
+    ctx.fillRect(x, y, Math.round(w * 0.12), h);
+    ctx.fillRect(x + Math.round(w * 0.88), y, Math.round(w * 0.12), h);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = "rgba(0,0,0,.35)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, w, h);
+    // 眼睛
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.fillStyle = "rgba(255,255,255,.95)";
+    ctx.beginPath();
+    ctx.arc(x + w * 0.32, y + h * 0.38, Math.max(2, 3 * vp.scale), 0, Math.PI * 2);
+    ctx.arc(x + w * 0.68, y + h * 0.38, Math.max(2, 3 * vp.scale), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
 
   // 血条（屏幕坐标）
   const hp = clamp(boss.hp / boss.maxHp, 0, 1);
