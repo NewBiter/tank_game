@@ -40,6 +40,7 @@ const bossSong = {
   idx: 0,
   cdUntil: 0,
   inited: false,
+  nextPlayAt: 0, // AudioContext 时间轴：保证上一段放完再播下一段
 };
 
 function initBossSongSegments(durationSec) {
@@ -47,9 +48,9 @@ function initBossSongSegments(durationSec) {
   const d = Math.max(1, durationSec || 60);
   // 取大概 20% / 48% / 72% 三段，每段 3.2s（会自动 clamp）
   bossSong.segments = [
-    { start: 64.0, dur: 5.0 },
+    { start: 63.5, dur: 2.0 },
     { start: 51.0, dur: 5.0 },
-    { start: 0.0, dur: 5.0 },
+    { start: 0.0, dur: 3.0},
   ];
 }
 
@@ -69,7 +70,11 @@ function bossSingOnHurt() {
       if (!bossSong.segments.length) return;
       const seg = bossSong.segments[bossSong.idx % bossSong.segments.length];
       bossSong.idx += 1;
-      audio.playSongSegment(bossSong.url, seg.start, seg.dur, 0.85);
+      // 串行播放：上一段没播完就排队到后面
+      const tNow = audio.getTime();
+      const when = Math.max(tNow, bossSong.nextPlayAt);
+      audio.playSongSegmentAt(bossSong.url, seg.start, seg.dur, 0.85, when);
+      bossSong.nextPlayAt = when + seg.dur + 0.02; // 轻微间隙
     }).catch(() => {
       bossSayBaby();
     });
@@ -356,22 +361,32 @@ function createAudio() {
     return p;
   }
 
-  function playSongSegment(url, startSec, durSec, gain = 0.8) {
+  function getTime() {
+    if (!ac) return 0;
+    return ac.currentTime;
+  }
+
+  function playSongSegmentAt(url, startSec, durSec, gain = 0.8, whenSec = null) {
     if (!ensure() || !ac || !sfxBus) return;
     if (muted || ac.state === "suspended") return;
     const cached = songCache.get(url);
     const playWith = (buf) => {
-      const t0 = ac.currentTime;
+      const t0 = (whenSec == null) ? ac.currentTime : Math.max(ac.currentTime, whenSec);
       const src = ac.createBufferSource();
       src.buffer = buf;
       const g = ac.createGain();
-      // 淡入淡出避免咔哒
+      // 音量：整段保持不衰减，只在首尾做极短淡入淡出（避免咔哒）
+      const fadeIn = 0.02;
+      const fadeOut = 0.04;
       g.gain.setValueAtTime(0.0001, t0);
-      g.gain.linearRampToValueAtTime(gain, t0 + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + durSec);
+      g.gain.linearRampToValueAtTime(gain, t0 + fadeIn);
       src.connect(g).connect(sfxBus);
       const safeStart = clamp(startSec, 0, Math.max(0, buf.duration - 0.05));
       const safeDur = clamp(durSec, 0.15, Math.max(0.15, buf.duration - safeStart));
+      const endT = t0 + safeDur;
+      const fadeOutStart = Math.max(t0 + fadeIn, endT - fadeOut);
+      g.gain.setValueAtTime(gain, fadeOutStart);
+      g.gain.linearRampToValueAtTime(0.0001, endT);
       src.start(t0, safeStart, safeDur);
     };
     if (cached && !(cached instanceof Promise)) {
@@ -379,6 +394,10 @@ function createAudio() {
     } else {
       preloadSong(url).then(playWith).catch(() => {});
     }
+  }
+
+  function playSongSegment(url, startSec, durSec, gain = 0.8) {
+    playSongSegmentAt(url, startSec, durSec, gain, null);
   }
 
   // 命中：更像“砰/金属火花”
@@ -410,7 +429,7 @@ function createAudio() {
     noiseBurst({ t0: t0 + 0.01, dur: 0.18, peak: 0.22, hp: 60, bp: 420 });
   }
 
-  return { unlock, startMusic, stopMusic, toggleMute, hit, boom, preloadSong, playSongSegment };
+  return { unlock, startMusic, stopMusic, toggleMute, hit, boom, preloadSong, playSongSegment, playSongSegmentAt, getTime };
 }
 
 const audio = createAudio();
